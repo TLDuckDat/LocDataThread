@@ -66,7 +66,9 @@ public static class ItemEndpoints
         if (!string.IsNullOrWhiteSpace(q.Keyword))
         {
             var pattern = $"%{EscapeLike(q.Keyword.Trim())}%";
-            query = query.Where(c => EF.Functions.ILike(c.Content, pattern));
+            // Phải truyền escape tường minh: ILike 2 tham số bị EF sinh thành "ESCAPE ''",
+            // khi đó '\' do EscapeLike thêm vào không còn là ký tự escape.
+            query = query.Where(c => EF.Functions.ILike(c.Content, pattern, @"\"));
         }
 
         if (!string.IsNullOrWhiteSpace(q.Word))

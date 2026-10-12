@@ -75,21 +75,17 @@ public class ListAndCountsTests(AppFactory factory) : IntegrationTestBase(factor
         Assert.Equal(["m"], result.Items.Select(i => i.Id));
     }
 
-    // BUG ĐÃ BIẾT (characterization): EF sinh "ILIKE @pattern ESCAPE ''" nên dấu '\' do EscapeLike
-    // thêm vào không còn tác dụng escape, và tìm '%', '_' hay '\' luôn ra rỗng dù nội dung có chứa chúng.
-    // Test này được đảo ngược trong commit sửa lỗi.
     [Theory]
     [InlineData("50%", "giảm 50% hôm nay", "giảm 50 phần trăm")]
     [InlineData("a_b", "mã a_b", "mã axb")]
     [InlineData("\\", "đường dẫn c:\\temp", "đường dẫn c:/temp")]
-    public async Task Keyword_with_like_metacharacters_currently_matches_nothing_BUG(
-        string keyword, string matching, string other)
+    public async Task Keyword_treats_like_metacharacters_literally(string keyword, string matching, string other)
     {
         await TestDb.SeedAsync(new SeedRow("hit", Content: matching), new SeedRow("miss", Content: other));
 
         var result = await ListAsync("?keyword=" + Uri.EscapeDataString(keyword));
 
-        Assert.Empty(result.Items);
+        Assert.Equal(["hit"], result.Items.Select(i => i.Id));
     }
 
     [Fact]
