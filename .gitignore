@@ -1,0 +1,17 @@
+# .NET
+bin/
+obj/
+.vs/
+*.user
+*.suo
+TestResults/
+test-results/
+
+# Dữ liệu và bản sao lưu: không đưa vào git
+backups/
+*.dump
+
+# Node / Python
+node_modules/
+__pycache__/
+*.pyc

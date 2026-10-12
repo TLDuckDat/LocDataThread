@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lọc cộng tác Threads</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Lọc cộng tác <span>Threads</span></div>
+    <div id="presence" class="presence" aria-label="Đồng đội đang online"></div>
+    <div id="status" class="status" data-state="connecting">Đang kết nối…</div>
+  </header>
+
+  <main class="layout">
+    <section class="board" aria-label="Danh sách bình luận">
+      <nav class="tabs" role="tablist">
+        <button class="tab is-active" data-bucket="active" role="tab">Đang lọc <b id="countActive">0</b></button>
+        <button class="tab" data-bucket="excluded" role="tab">Đã loại <b id="countExcluded">0</b></button>
+      </nav>
+
+      <form class="filters" id="filters" autocomplete="off">
+        <input id="keyword" type="search" placeholder="Tìm trong nội dung…">
+        <input id="word" type="search" placeholder="Từ khóa đã khớp (vd: vcl)">
+        <select id="minScore" aria-label="Điểm tối thiểu">
+          <option value="">Mọi điểm</option>
+          <option value="0.2">Điểm ≥ 20%</option>
+          <option value="0.4">Điểm ≥ 40%</option>
+          <option value="0.6">Điểm ≥ 60%</option>
+          <option value="0.8">Điểm ≥ 80%</option>
+        </select>
+        <select id="replyLevel" aria-label="Cấp bình luận">
+          <option value="">Mọi cấp</option>
+          <option value="0">F0 · Gốc</option>
+          <option value="1">F1</option>
+          <option value="2">F2</option>
+          <option value="3">F3</option>
+        </select>
+      </form>
+
+      <div class="actionbar">
+        <label class="selectall"><input type="checkbox" id="selectPage"> Chọn trang này</label>
+        <span id="selCount" class="muted">Đã chọn 0</span>
+        <button id="clearSel" class="btn ghost" type="button">Bỏ chọn</button>
+        <button id="moveBtn" class="btn primary" type="button">Loại khỏi danh sách</button>
+      </div>
+
+      <div id="list" class="list" aria-live="polite"></div>
+
+      <nav class="pager">
+        <button id="prev" class="btn ghost" type="button">← Trước</button>
+        <span id="pageInfo" class="muted"></span>
+        <button id="next" class="btn ghost" type="button">Sau →</button>
+      </nav>
+    </section>
+
+    <aside class="detail" id="detail" aria-label="Ngữ cảnh bình luận"></aside>
+  </main>
+
+  <div class="hotkeys muted">Phím tắt: <kbd>J</kbd>/<kbd>K</kbd> di chuyển · <kbd>Space</kbd> chọn · <kbd>X</kbd> chuyển sang tab còn lại</div>
+
+  <div id="nameModal" class="modal" hidden>
+    <form id="nameForm" class="modal-card">
+      <h2>Bạn là ai?</h2>
+      <p class="muted">Tên này sẽ hiện cho đồng đội biết bạn đang lọc bình luận nào.</p>
+      <input id="nameInput" maxlength="40" required placeholder="Ví dụ: Minh">
+      <button class="btn primary" type="submit">Vào phòng lọc</button>
+    </form>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="js/vendor/signalr.min.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
