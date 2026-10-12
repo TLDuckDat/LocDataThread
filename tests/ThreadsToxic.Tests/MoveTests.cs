@@ -96,17 +96,6 @@ public class MoveTests(AppFactory factory) : IntegrationTestBase(factory)
     }
 
     [Fact]
-    public async Task Request_without_a_user_name_is_rejected()
-    {
-        await TestDb.SeedAsync(new SeedRow("a"));
-
-        var (status, _) = await MoveAsync(["a"], true, "   ");
-
-        Assert.Equal(HttpStatusCode.BadRequest, status);
-        Assert.False(await TestDb.IsExcludedAsync("a"));
-    }
-
-    [Fact]
     public async Task Request_without_ids_is_rejected()
     {
         var (status, _) = await MoveAsync([], true, "Minh");

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.Extensions.Options;
 
 namespace ThreadsToxic.Web.Services;
@@ -11,14 +12,51 @@ public class CollabState(IOptions<CollabOptions> options)
     private readonly object _gate = new();
     private readonly Dictionary<string, string> _usersByConnection = new();
     private readonly Dictionary<string, Lease> _leasesByItem = new();
+    private readonly Dictionary<string, string> _connectionByToken = new();
+    private readonly Dictionary<string, string> _tokenByConnection = new();
 
     private sealed record Lease(string ConnectionId, string UserName, DateTimeOffset ExpiresAt);
 
     public record Presence(string Name, string? FocusedItemId);
 
+    // Danh tính do server gán cho một kết nối đã Join
+    public record Session(string ConnectionId, string UserName);
+
     public void SetUser(string connectionId, string name)
     {
         lock (_gate) _usersByConnection[connectionId] = name;
+    }
+
+    // Cấp token phiên cho kết nối. Token cũ của cùng kết nối (nếu có) mất hiệu lực.
+    // Token là bí mật: không ghi log, không đưa vào URL.
+    public string IssueToken(string connectionId)
+    {
+        lock (_gate)
+        {
+            if (_tokenByConnection.TryGetValue(connectionId, out var previous))
+                _connectionByToken.Remove(previous);
+
+            var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+            _tokenByConnection[connectionId] = token;
+            _connectionByToken[token] = connectionId;
+            return token;
+        }
+    }
+
+    // null nếu token không tồn tại, đã bị thay, hoặc kết nối đã đóng
+    public Session? ResolveSession(string? token)
+    {
+        if (string.IsNullOrEmpty(token)) return null;
+
+        lock (_gate)
+        {
+            if (_connectionByToken.TryGetValue(token, out var connectionId)
+                && _usersByConnection.TryGetValue(connectionId, out var name))
+            {
+                return new Session(connectionId, name);
+            }
+            return null;
+        }
     }
 
     // Trả về (đã giữ được, tên người đang giữ)
@@ -74,6 +112,8 @@ public class CollabState(IOptions<CollabOptions> options)
         lock (_gate)
         {
             _usersByConnection.Remove(connectionId);
+            if (_tokenByConnection.Remove(connectionId, out var token))
+                _connectionByToken.Remove(token);
             var released = _leasesByItem
                 .Where(kv => kv.Value.ConnectionId == connectionId)
                 .Select(kv => kv.Key)

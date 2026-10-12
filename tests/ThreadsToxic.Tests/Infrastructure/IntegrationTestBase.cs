@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 
@@ -18,6 +19,9 @@ public abstract class IntegrationTestBase<TFactory> : IClassFixture<TFactory>, I
     protected TFactory Factory { get; }
     protected HttpClient Http { get; }
 
+    // Mỗi tên người dùng dùng trong MoveAsync có một kết nối SignalR thật (đã Join) để có token phiên.
+    private readonly ConcurrentDictionary<string, Lazy<Task<HubTestClient>>> _actors = new();
+
     protected IntegrationTestBase(TFactory factory)
     {
         Factory = factory;
@@ -28,9 +32,17 @@ public abstract class IntegrationTestBase<TFactory> : IClassFixture<TFactory>, I
 
     public virtual async Task DisposeAsync()
     {
+        foreach (var actor in _actors.Values)
+            await (await actor.Value).DisposeAsync();
+
         await TestDb.ResetAsync();
         Http.Dispose();
     }
+
+    /// <summary>Kết nối + Join một lần cho mỗi tên; dùng chung cho các request của người đó.</summary>
+    protected Task<HubTestClient> ActorAsync(string userName) =>
+        _actors.GetOrAdd(userName,
+            name => new Lazy<Task<HubTestClient>>(() => HubTestClient.ConnectAsync(Factory, name))).Value;
 
     protected async Task<ListResult> ListAsync(string query = "")
     {
@@ -42,11 +54,25 @@ public abstract class IntegrationTestBase<TFactory> : IClassFixture<TFactory>, I
     protected async Task<CountsResult> CountsAsync() =>
         (await Http.GetFromJsonAsync<CountsResult>("/api/items/counts"))!;
 
+    /// <summary>Gọi move với tư cách <paramref name="userName"/> (tự Join để lấy token phiên).</summary>
     protected async Task<(HttpStatusCode Status, MoveResult? Result)> MoveAsync(
         IEnumerable<string> ids, bool toExcluded, string userName)
     {
-        var response = await Http.PostAsJsonAsync("/api/items/move",
-            new { ids = ids.ToArray(), toExcluded, userName });
+        var actor = await ActorAsync(userName);
+        return await MoveWithTokenAsync(actor.Token, new { ids = ids.ToArray(), toExcluded });
+    }
+
+    /// <summary>Gọi move với token và body tùy ý (dùng cho test bảo mật).</summary>
+    protected async Task<(HttpStatusCode Status, MoveResult? Result)> MoveWithTokenAsync(
+        string? token, object body)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/items/move")
+        {
+            Content = JsonContent.Create(body),
+        };
+        if (token is not null) request.Headers.Add("X-Session-Token", token);
+
+        var response = await Http.SendAsync(request);
         var result = response.IsSuccessStatusCode
             ? await response.Content.ReadFromJsonAsync<MoveResult>()
             : null;

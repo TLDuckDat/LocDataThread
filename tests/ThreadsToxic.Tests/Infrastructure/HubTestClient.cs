@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.SignalR.Client;
 namespace ThreadsToxic.Tests.Infrastructure;
 
 public record FocusResult(bool Granted, string? Holder);
+public record JoinResult(string Token);
 public record MovedPayload(List<string> Ids, bool ToExcluded, string By);
 public record LockInfo(string ItemId, string Holder);
 public record PresenceInfo(string Name, string? FocusedItemId);
@@ -14,6 +15,9 @@ public sealed class HubTestClient : IAsyncDisposable
 {
     public HubConnection Connection { get; }
     public string Name { get; }
+
+    /// <summary>Token phiên do server cấp ở lần Join gần nhất.</summary>
+    public string? Token { get; private set; }
 
     public ConcurrentQueue<(string ItemId, string? Holder)> LockChanges { get; } = new();
     public ConcurrentQueue<MovedPayload> Moved { get; } = new();
@@ -45,7 +49,12 @@ public sealed class HubTestClient : IAsyncDisposable
         return client;
     }
 
-    public Task JoinAsync() => Connection.InvokeAsync("Join", Name);
+    public async Task<string> JoinAsync()
+    {
+        var result = await Connection.InvokeAsync<JoinResult>("Join", Name);
+        Token = result.Token;
+        return result.Token;
+    }
 
     public Task<FocusResult> FocusAsync(string itemId) =>
         Connection.InvokeAsync<FocusResult>("Focus", itemId);

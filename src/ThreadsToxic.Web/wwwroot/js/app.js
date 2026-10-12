@@ -13,6 +13,7 @@
     counts: { active: 0, excluded: 0 },
     selected: new Set(),
     focusId: null,
+    token: null,    // token phiên do server cấp khi Join (gửi trong header X-Session-Token)
     locks: {},      // itemId -> tên người đang xem
     presence: [],
     connected: false,
@@ -65,12 +66,34 @@
 
   async function api(path, options = {}) {
     const res = await fetch(path, {
-      headers: { "Content-Type": "application/json" },
       ...options,
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     });
     const body = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(typeof body === "string" ? body : "Yêu cầu thất bại.");
+    if (!res.ok) {
+      const error = new Error(typeof body === "string" ? body : "Yêu cầu thất bại.");
+      error.status = res.status;
+      throw error;
+    }
     return body;
+  }
+
+  // Gọi API ghi bằng token phiên do server cấp. Token hết hạn (401, ví dụ sau khi kết nối lại)
+  // thì Join lại để lấy token mới và thử lại đúng một lần.
+  async function postMove(ids, toExcluded, canRetry = true) {
+    try {
+      return await api("/api/items/move", {
+        method: "POST",
+        headers: { "X-Session-Token": state.token || "" },
+        body: JSON.stringify({ ids, toExcluded }),
+      });
+    } catch (err) {
+      if (err.status === 401 && canRetry) {
+        await joinRoom();
+        return postMove(ids, toExcluded, false);
+      }
+      throw err;
+    }
   }
 
   // ---------- Tải dữ liệu ----------
@@ -275,10 +298,7 @@
     }
 
     try {
-      const result = await api("/api/items/move", {
-        method: "POST",
-        body: JSON.stringify({ ids: free, toExcluded, userName: state.me.name }),
-      });
+      const result = await postMove(free, toExcluded);
       const verb = toExcluded ? "Đã loại" : "Đã khôi phục";
       let message = `${verb} ${result.moved} bình luận.`;
       if (skipped) message += ` Bỏ qua ${skipped} bình luận đang được xem.`;
@@ -334,17 +354,27 @@
       renderPresence();
     });
 
-    hub.onreconnecting(() => { state.connected = false; setStatus("Đang kết nối lại…", "connecting"); });
+    // Token gắn với connection id cũ nên mất hiệu lực ngay khi kết nối đứt.
+    hub.onreconnecting(() => {
+      state.connected = false;
+      state.token = null;
+      setStatus("Đang kết nối lại…", "connecting");
+    });
     hub.onreconnected(async () => {
-      await joinRoom();
+      await joinRoom();   // lấy token mới
       if (state.focusId) claimFocus(state.focusId);
       scheduleReload();
     });
-    hub.onclose(() => { state.connected = false; setStatus("Mất kết nối", "offline"); });
+    hub.onclose(() => {
+      state.connected = false;
+      state.token = null;
+      setStatus("Mất kết nối", "offline");
+    });
   }
 
   async function joinRoom() {
-    await hub.invoke("Join", state.me.name);
+    const result = await hub.invoke("Join", state.me.name);
+    state.token = result.token;
     state.connected = true;
     setStatus("Đã kết nối", "online");
   }

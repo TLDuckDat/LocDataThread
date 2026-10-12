@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using ThreadsToxic.Web.Data;
@@ -38,11 +39,15 @@ public record ItemDto(
     string? ExcludedBy,
     DateTimeOffset? ExcludedAt);
 
-public record MoveRequest(List<string> Ids, bool ToExcluded, string UserName);
+// Tên người thao tác lấy từ phiên phía server (header X-Session-Token), không nhận từ body.
+public record MoveRequest(List<string> Ids, bool ToExcluded);
 
 public static class ItemEndpoints
 {
     private const int MaxMoveBatch = 500;
+
+    // Token phiên: tuyệt đối không ghi log header này (không bật HttpLogging cho request header).
+    public const string SessionHeader = "X-Session-Token";
 
     public static void MapItemEndpoints(this WebApplication app)
     {
@@ -114,16 +119,18 @@ public static class ItemEndpoints
         return Results.Ok(new { active, excluded });
     }
 
-    private static async Task<Results<Ok<object>, BadRequest<string>>> MoveAsync(
+    private static async Task<Results<Ok<object>, BadRequest<string>, UnauthorizedHttpResult>> MoveAsync(
         MoveRequest req,
+        [FromHeader(Name = SessionHeader)] string? sessionToken,
         AppDbContext db,
         IHubContext<CollabHub> hub,
         CollabState state,
         CancellationToken ct)
     {
-        var userName = (req.UserName ?? "").Trim();
-        if (userName.Length is 0 or > 40)
-            return TypedResults.BadRequest("Thiếu tên người thao tác.");
+        var session = state.ResolveSession(sessionToken);
+        if (session is null)
+            return TypedResults.Unauthorized();
+        var userName = session.UserName;
 
         var ids = (req.Ids ?? new()).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().ToArray();
         if (ids.Length is 0)
