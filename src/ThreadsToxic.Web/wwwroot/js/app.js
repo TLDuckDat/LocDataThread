@@ -25,9 +25,8 @@
   const $ = (sel) => document.querySelector(sel);
 
   // ---------- Tiện ích ----------
-  const esc = (value) =>
-    String(value ?? "").replace(/[&<>"']/g, (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  // Mọi dữ liệu từ server/người dùng chèn vào HTML phải đi qua esc(); URL phải qua safeUrl().
+  const { esc, safeUrl, toInt } = window.ThreadsUtil;
 
   const debounce = (fn, ms) => {
     let timer = null;
@@ -201,7 +200,7 @@
         <div>
           <div class="meta">
             <span class="score ${scoreClass(item.toxicScore)}">${Math.round(item.toxicScore * 100)}%</span>
-            <span class="level">F${item.replyLevel}</span>
+            <span class="level">F${toInt(item.replyLevel)}</span>
             <span>@${esc(item.authorUsername || "ẩn danh")}</span>
             ${lock}
           </div>
@@ -241,9 +240,10 @@
       return;
     }
 
+    const level = Math.min(3, toInt(item.replyLevel));
     const levels = [item.f0, item.f1, item.f2, item.f3];
-    const chain = levels.slice(0, item.replyLevel + 1).map((text, idx) => {
-      const isCurrent = idx === item.replyLevel;
+    const chain = levels.slice(0, level + 1).map((text, idx) => {
+      const isCurrent = idx === level;
       return `<li class="${isCurrent ? "current" : ""}"><small>F${idx}${isCurrent ? " · bình luận này" : ""}</small>${esc(text || item.content)}</li>`;
     }).join("");
 
@@ -252,6 +252,11 @@
     const categories = (item.categories || []).join(", ") || "—";
     const words = (item.matchedWords || []).join(", ") || "—";
     const moveLabel = item.isExcluded ? "Khôi phục" : "Loại khỏi danh sách";
+    // Chỉ http(s): chặn javascript:, data:... có thể nằm trong dữ liệu cào về.
+    const href = safeUrl(item.commentUrl) || safeUrl(item.postUrl);
+    const link = href
+      ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">Mở trên Threads ↗</a>`
+      : "—";
 
     panel.innerHTML = `
       <h2>Ngữ cảnh hội thoại</h2>
@@ -263,7 +268,7 @@
         <dt>Phân loại</dt><dd>${esc(categories)}</dd>
         <dt>Từ khớp</dt><dd>${esc(words)}</dd>
         ${item.isExcluded ? `<dt>Đã loại bởi</dt><dd>${esc(item.excludedBy || "—")}</dd>` : ""}
-        <dt>Liên kết</dt><dd><a href="${esc(item.commentUrl || item.postUrl)}" target="_blank" rel="noopener">Mở trên Threads ↗</a></dd>
+        <dt>Liên kết</dt><dd>${link}</dd>
       </dl>
       ${lockedByOther ? `<p class="lock">🔒 ${esc(holder)} đang xem bình luận này</p>` : ""}
       <div class="actions">
