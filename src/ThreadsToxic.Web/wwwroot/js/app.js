@@ -51,12 +51,29 @@
     return Number.isNaN(d.getTime()) ? raw : d.toLocaleString("vi-VN");
   };
 
-  const toast = (message) => {
+  // options: { actionLabel, onAction, ms }. Nút hành động (vd. "Hoàn tác", "Vẫn chuyển") là tùy chọn.
+  const toast = (message, options = {}) => {
     const el = document.createElement("div");
     el.className = "toast";
-    el.textContent = message;
+
+    const text = document.createElement("span");
+    text.textContent = message;
+    el.append(text);
+
+    if (options.actionLabel && options.onAction) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "toast-action";
+      button.textContent = options.actionLabel;
+      button.addEventListener("click", () => {
+        el.remove();
+        options.onAction();
+      });
+      el.append(button);
+    }
+
     $("#toasts").append(el);
-    setTimeout(() => el.remove(), 3500);
+    setTimeout(() => el.remove(), options.ms ?? 3500);
   };
 
   const storage = {
@@ -80,17 +97,17 @@
 
   // Gọi API ghi bằng token phiên do server cấp. Token hết hạn (401, ví dụ sau khi kết nối lại)
   // thì Join lại để lấy token mới và thử lại đúng một lần.
-  async function postMove(ids, toExcluded, canRetry = true) {
+  async function postMove(ids, toExcluded, force = false, canRetry = true) {
     try {
       return await api("/api/items/move", {
         method: "POST",
         headers: { "X-Session-Token": state.token || "" },
-        body: JSON.stringify({ ids, toExcluded }),
+        body: JSON.stringify({ ids, toExcluded, force }),
       });
     } catch (err) {
       if (err.status === 401 && canRetry) {
         await joinRoom();
-        return postMove(ids, toExcluded, false);
+        return postMove(ids, toExcluded, force, false);
       }
       throw err;
     }
@@ -286,26 +303,33 @@
   }
 
   // ---------- Thao tác chuyển bình luận ----------
-  async function moveItems(ids, toExcluded) {
+  // Server quyết định bình luận nào bị khóa bởi người khác (trả về trong result.locked).
+  async function moveItems(ids, toExcluded, { force = false } = {}) {
     if (!ids.length) return;
 
-    // Bỏ qua bình luận đang được người khác xem (lease lock)
-    const free = ids.filter((id) => !(state.locks[id] && state.locks[id] !== state.me.name));
-    const skipped = ids.length - free.length;
-    if (!free.length) {
-      toast("Các bình luận đã chọn đang được đồng đội xem.");
-      return;
-    }
-
     try {
-      const result = await postMove(free, toExcluded);
+      const result = await postMove(ids, toExcluded, force);
+      const locked = result.locked || [];
+      const handled = ids.filter((id) => !locked.includes(id));
+
       const verb = toExcluded ? "Đã loại" : "Đã khôi phục";
       let message = `${verb} ${result.moved} bình luận.`;
-      if (skipped) message += ` Bỏ qua ${skipped} bình luận đang được xem.`;
       if (result.skipped) message += ` ${result.skipped} bình luận đã ở đúng mục.`;
-      toast(message);
-      for (const id of free) state.selected.delete(id);
-      if (free.includes(state.focusId)) setFocus(null);
+
+      if (locked.length) {
+        const holders = [...new Set(locked.map((id) => state.locks[id]).filter(Boolean))];
+        message += ` Bỏ qua ${locked.length} bình luận đang được ${holders.join(", ") || "đồng đội"} xem.`;
+        toast(message, {
+          actionLabel: "Vẫn chuyển",
+          onAction: () => moveItems(locked, toExcluded, { force: true }),
+          ms: 8000,
+        });
+      } else {
+        toast(message);
+      }
+
+      for (const id of handled) state.selected.delete(id);
+      if (handled.includes(state.focusId)) setFocus(null);
     } catch (err) {
       toast(`Thao tác thất bại: ${err.message}`);
     }

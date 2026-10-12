@@ -40,7 +40,8 @@ public record ItemDto(
     DateTimeOffset? ExcludedAt);
 
 // Tên người thao tác lấy từ phiên phía server (header X-Session-Token), không nhận từ body.
-public record MoveRequest(List<string> Ids, bool ToExcluded);
+// Force = true: vượt qua khóa của người khác (được ghi audit với action có tiền tố "force_").
+public record MoveRequest(List<string> Ids, bool ToExcluded, bool Force = false);
 
 public static class ItemEndpoints
 {
@@ -138,6 +139,20 @@ public static class ItemEndpoints
         if (ids.Length > MaxMoveBatch)
             return TypedResults.BadRequest($"Mỗi lần chỉ thao tác tối đa {MaxMoveBatch} bình luận.");
 
+        // Bình luận đang bị NGƯỜI KHÁC giữ lease còn hạn thì bỏ qua (trừ khi Force).
+        // Kiểm tra khóa và UPDATE không nguyên tử: nếu có người Focus đúng lúc đó thì dòng vẫn đổi
+        // và biến mất khỏi màn hình họ; dữ liệu không mất vì khôi phục được.
+        var heldByOthers = state.GetLeases(DateTimeOffset.UtcNow)
+            .Where(lease => lease.Holder != userName)
+            .Select(lease => lease.ItemId)
+            .ToHashSet();
+        var lockedIds = req.Force ? [] : ids.Where(heldByOthers.Contains).ToArray();
+        var forcedIds = req.Force ? ids.Where(heldByOthers.Contains).ToArray() : [];
+        var targetIds = lockedIds.Length == 0 ? ids : ids.Except(lockedIds).ToArray();
+
+        if (targetIds.Length == 0)
+            return TypedResults.Ok<object>(new { moved = 0, skipped = 0, locked = lockedIds });
+
         await using var tx = await db.Database.BeginTransactionAsync(ct);
 
         // Cập nhật có điều kiện: chỉ dòng thực sự đổi bucket mới được trả về.
@@ -150,7 +165,7 @@ public static class ItemEndpoints
             changed = await db.Database.SqlQuery<string>($"""
                 UPDATE comments
                 SET is_excluded = TRUE, excluded_by = {userName}, excluded_at = NOW()
-                WHERE id = ANY({ids}) AND is_excluded = FALSE
+                WHERE id = ANY({targetIds}) AND is_excluded = FALSE
                 RETURNING id
                 """).ToListAsync(ct);
         }
@@ -160,7 +175,7 @@ public static class ItemEndpoints
             changed = await db.Database.SqlQuery<string>($"""
                 UPDATE comments
                 SET is_excluded = FALSE, excluded_by = NULL, excluded_at = NULL
-                WHERE id = ANY({ids}) AND is_excluded = TRUE
+                WHERE id = ANY({targetIds}) AND is_excluded = TRUE
                 RETURNING id
                 """).ToListAsync(ct);
         }
@@ -168,9 +183,11 @@ public static class ItemEndpoints
         if (changed.Count > 0)
         {
             var changedArray = changed.ToArray();
+            var forceAction = "force_" + action;
             await db.Database.ExecuteSqlInterpolatedAsync($"""
                 INSERT INTO moderation_audits (comment_id, user_name, action)
-                SELECT x, {userName}, {action} FROM unnest({changedArray}) AS x
+                SELECT x, {userName}, CASE WHEN x = ANY({forcedIds}) THEN {forceAction} ELSE {action} END
+                FROM unnest({changedArray}) AS x
                 """, ct);
         }
 
@@ -185,7 +202,12 @@ public static class ItemEndpoints
                 new { ids = changed, toExcluded = req.ToExcluded, by = userName }, ct);
         }
 
-        return TypedResults.Ok<object>(new { moved = changed.Count, skipped = ids.Length - changed.Count });
+        return TypedResults.Ok<object>(new
+        {
+            moved = changed.Count,
+            skipped = targetIds.Length - changed.Count,
+            locked = lockedIds,
+        });
     }
 
     // Tránh ký tự đại diện của LIKE bị hiểu nhầm khi người dùng gõ % hoặc _

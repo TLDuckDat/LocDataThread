@@ -311,6 +311,20 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
   border-radius: 8px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, .2);
   animation: rise .18s ease-out;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.toast-action {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
 }
 @keyframes rise { from { transform: translateY(6px); opacity: 0; } }
 

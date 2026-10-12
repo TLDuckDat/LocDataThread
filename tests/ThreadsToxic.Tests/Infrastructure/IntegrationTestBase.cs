@@ -7,7 +7,7 @@ namespace ThreadsToxic.Tests.Infrastructure;
 public record ListResult(int Total, int Page, int PageSize, List<ItemView> Items);
 public record ItemView(string Id, string Content, int ReplyLevel, float ToxicScore, bool IsExcluded, string? ExcludedBy);
 public record CountsResult(int Active, int Excluded);
-public record MoveResult(int Moved, int Skipped);
+public record MoveResult(int Moved, int Skipped, List<string>? Locked = null);
 
 /// <summary>
 /// Mỗi test bắt đầu và kết thúc với database test trống.
@@ -56,10 +56,10 @@ public abstract class IntegrationTestBase<TFactory> : IClassFixture<TFactory>, I
 
     /// <summary>Gọi move với tư cách <paramref name="userName"/> (tự Join để lấy token phiên).</summary>
     protected async Task<(HttpStatusCode Status, MoveResult? Result)> MoveAsync(
-        IEnumerable<string> ids, bool toExcluded, string userName)
+        IEnumerable<string> ids, bool toExcluded, string userName, bool force = false)
     {
         var actor = await ActorAsync(userName);
-        return await MoveWithTokenAsync(actor.Token, new { ids = ids.ToArray(), toExcluded });
+        return await MoveWithTokenAsync(actor.Token, new { ids = ids.ToArray(), toExcluded, force });
     }
 
     /// <summary>Gọi move với token và body tùy ý (dùng cho test bảo mật).</summary>

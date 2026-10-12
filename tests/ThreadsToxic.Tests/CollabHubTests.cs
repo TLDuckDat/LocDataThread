@@ -122,12 +122,12 @@ public class CollabHubTests(AppFactory factory) : IntegrationTestBase(factory)
         await using var lan = await HubTestClient.ConnectAsync(Factory, "Lan");
         await minh.FocusAsync("t_001");
 
-        await MoveAsync(["t_001"], toExcluded: true, "Huy");
+        await MoveAsync(["t_001"], toExcluded: true, "Minh");
 
         await Wait.UntilAsync(() => lan.LockChanges.Contains(("t_001", null)),
             "khóa phải được giải phóng sau khi bình luận bị chuyển");
         await Wait.UntilAsync(
-            () => lan.Moved.Any(m => m.Ids.SequenceEqual(["t_001"]) && m.ToExcluded && m.By == "Huy"),
+            () => lan.Moved.Any(m => m.Ids.SequenceEqual(["t_001"]) && m.ToExcluded && m.By == "Minh"),
             "Lan phải nhận ItemsMoved");
         Assert.True((await lan.FocusAsync("t_001")).Granted);
     }
@@ -145,17 +145,6 @@ public class CollabHubTests(AppFactory factory) : IntegrationTestBase(factory)
         Assert.Empty(lan.Moved);
     }
 
-    [Fact]
-    public async Task Move_currently_ignores_locks_held_by_other_users()
-    {
-        await TestDb.SeedAsync(new SeedRow("t_001"));
-        await using var minh = await HubTestClient.ConnectAsync(Factory, "Minh");
-        await minh.FocusAsync("t_001");
-
-        var (_, result) = await MoveAsync(["t_001"], toExcluded: true, "Huy");
-
-        Assert.Equal(1, result!.Moved);
-    }
 }
 
 public class LeaseExpiryTests(ShortLeaseFactory factory) : IntegrationTestBase<ShortLeaseFactory>(factory)
