@@ -4,7 +4,7 @@ using System.Net.Http.Json;
 
 namespace ThreadsToxic.Tests.Infrastructure;
 
-public record ListResult(int Total, int Page, int PageSize, List<ItemView> Items);
+public record ListResult(int Total, int Page, int PageSize, List<ItemView> Items, CountsResult? Counts = null);
 public record ItemView(string Id, string Content, int ReplyLevel, float ToxicScore, bool IsExcluded, string? ExcludedBy);
 public record CountsResult(int Active, int Excluded);
 public record MoveResult(int Moved, int Skipped, List<string>? Locked = null, List<string>? MovedIds = null);

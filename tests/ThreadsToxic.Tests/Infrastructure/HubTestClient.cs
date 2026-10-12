@@ -6,7 +6,7 @@ namespace ThreadsToxic.Tests.Infrastructure;
 
 public record FocusResult(bool Granted, string? Holder);
 public record JoinResult(string Token);
-public record MovedPayload(List<string> Ids, bool ToExcluded, string By);
+public record MovedPayload(List<string> Ids, bool ToExcluded, string By, bool Undo = false, CountsResult? Counts = null);
 public record LockInfo(string ItemId, string Holder);
 public record PresenceInfo(string Name, string? FocusedItemId);
 

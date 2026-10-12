@@ -41,6 +41,8 @@ public record ItemDto(
 
 // Tên người thao tác lấy từ phiên phía server (header X-Session-Token), không nhận từ body.
 // Force = true: vượt qua khóa của người khác (được ghi audit với action có tiền tố "force_").
+public record BucketCounts(int Active, int Excluded);
+
 public record MoveRequest(List<string> Ids, bool ToExcluded, bool Force = false);
 
 // Hoàn tác: ToExcluded là trạng thái muốn đưa về (ngược với thao tác ban đầu).
@@ -109,19 +111,23 @@ public static class ItemEndpoints
             c.AnalysisData.MatchedWords, c.AnalysisData.Categories,
             c.IsExcluded, c.ExcludedBy, c.ExcludedAt));
 
-        return Results.Ok(new { total, page, pageSize, items });
+        var counts = await GetCountsAsync(db, ct);
+        return Results.Ok(new { total, page, pageSize, items, counts });
     }
 
-    private static async Task<IResult> CountsAsync(AppDbContext db, CancellationToken ct)
+    private static async Task<IResult> CountsAsync(AppDbContext db, CancellationToken ct) =>
+        Results.Ok(await GetCountsAsync(db, ct));
+
+    private static async Task<BucketCounts> GetCountsAsync(AppDbContext db, CancellationToken ct)
     {
         var counts = await db.Comments
             .GroupBy(c => c.IsExcluded)
             .Select(g => new { Excluded = g.Key, Count = g.Count() })
             .ToListAsync(ct);
 
-        var excluded = counts.FirstOrDefault(x => x.Excluded)?.Count ?? 0;
-        var active = counts.FirstOrDefault(x => !x.Excluded)?.Count ?? 0;
-        return Results.Ok(new { active, excluded });
+        return new BucketCounts(
+            Active: counts.FirstOrDefault(x => !x.Excluded)?.Count ?? 0,
+            Excluded: counts.FirstOrDefault(x => x.Excluded)?.Count ?? 0);
     }
 
     private static async Task<Results<Ok<object>, BadRequest<string>, UnauthorizedHttpResult>> MoveAsync(
@@ -197,7 +203,7 @@ public static class ItemEndpoints
 
         await tx.CommitAsync(ct);
 
-        await BroadcastMovedAsync(hub, state, changed, req.ToExcluded, userName, undo: false, ct);
+        await BroadcastMovedAsync(db, hub, state, changed, req.ToExcluded, userName, undo: false, ct);
 
         return TypedResults.Ok<object>(new
         {
@@ -301,7 +307,7 @@ public static class ItemEndpoints
 
         await tx.CommitAsync(ct);
 
-        await BroadcastMovedAsync(hub, state, changed, req.ToExcluded, userName, undo: true, ct);
+        await BroadcastMovedAsync(db, hub, state, changed, req.ToExcluded, userName, undo: true, ct);
 
         return TypedResults.Ok<object>(new
         {
@@ -314,7 +320,7 @@ public static class ItemEndpoints
     }
 
     private static async Task BroadcastMovedAsync(
-        IHubContext<CollabHub> hub, CollabState state, List<string> changed,
+        AppDbContext db, IHubContext<CollabHub> hub, CollabState state, List<string> changed,
         bool toExcluded, string userName, bool undo, CancellationToken ct)
     {
         if (changed.Count == 0) return;
@@ -322,8 +328,12 @@ public static class ItemEndpoints
         foreach (var id in state.ReleaseItems(changed))
             await hub.Clients.Group(CollabHub.Room).SendAsync("LockChanged", id, null, ct);
 
+        // Số đếm tính sau commit để client cập nhật huy hiệu ngay. Hai thao tác chồng nhau có thể
+        // làm số đếm của sự kiện đến sau cũ hơn; client vẫn tải lại một lần để về đúng trạng thái.
+        var counts = await GetCountsAsync(db, ct);
+
         await hub.Clients.Group(CollabHub.Room).SendAsync("ItemsMoved",
-            new { ids = changed, toExcluded, by = userName, undo }, ct);
+            new { ids = changed, toExcluded, by = userName, undo, counts }, ct);
     }
 
     // Tránh ký tự đại diện của LIKE bị hiểu nhầm khi người dùng gõ % hoặc _

@@ -124,24 +124,50 @@
     return params;
   }
 
+  // Neo vị trí nhìn vào bình luận đang focus (hoặc dòng đầu tiên đang hiện) để danh sách
+  // tải lại không làm màn hình nhảy.
+  function captureViewAnchor() {
+    const rows = [...document.querySelectorAll("#list .row")];
+    const inView = (el) => {
+      const rect = el.getBoundingClientRect();
+      return rect.bottom > 0 && rect.top < window.innerHeight;
+    };
+    const target = rows.find((r) => r.dataset.id === state.focusId && inView(r)) || rows.find(inView);
+    return target ? { id: target.dataset.id, top: target.getBoundingClientRect().top } : null;
+  }
+
+  function restoreViewAnchor(anchor) {
+    if (!anchor) return;
+    const row = document.querySelector(`#list .row[data-id="${CSS.escape(anchor.id)}"]`);
+    if (row) window.scrollBy(0, row.getBoundingClientRect().top - anchor.top);
+  }
+
   async function reload() {
     try {
-      const [list, counts] = await Promise.all([
-        api(`/api/items?${currentParams()}`),
-        api("/api/items/counts"),
-      ]);
+      const list = await api(`/api/items?${currentParams()}`);
+      // Phản hồi mới đã kèm counts; gọi /counts chỉ để tương thích với server cũ.
+      const counts = list.counts ?? await api("/api/items/counts");
+
+      const anchor = captureViewAnchor();
+      const detailScroll = $("#detail").scrollTop;
+
       state.total = list.total;
       state.items = list.items;
       state.counts = counts;
 
       const visible = new Set(list.items.map((i) => i.id));
       for (const id of [...state.selected]) if (!visible.has(id)) state.selected.delete(id);
+      // Bình luận đang focus biến mất (người khác đã chuyển): bỏ focus thay vì nhảy sang dòng khác,
+      // để phím X không tác động nhầm lên một bình luận mà người dùng chưa kịp đọc.
       if (state.focusId && !visible.has(state.focusId)) setFocus(null);
 
       renderCounts();
       renderList();
       renderDetail();
       renderPager();
+
+      restoreViewAnchor(anchor);
+      $("#detail").scrollTop = detailScroll;
     } catch (err) {
       toast(`Không tải được dữ liệu: ${err.message}`);
     }
@@ -372,10 +398,15 @@
       .withAutomaticReconnect()
       .build();
 
-    hub.on("ItemsMoved", ({ ids, toExcluded, by }) => {
+    hub.on("ItemsMoved", ({ ids, toExcluded, by, counts }) => {
       for (const id of ids) delete state.locks[id];
       if (by !== state.me.name) {
         toast(`${by} đã ${toExcluded ? "loại" : "khôi phục"} ${ids.length} bình luận.`);
+      }
+      // Cập nhật huy hiệu ngay; thiếu trường (server cũ) thì chỉ dựa vào lần tải lại.
+      if (counts) {
+        state.counts = counts;
+        renderCounts();
       }
       scheduleReload();
     });
