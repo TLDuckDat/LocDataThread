@@ -32,3 +32,6 @@ app.MapItemEndpoints();
 app.MapHub<CollabHub>("/hubs/collab");
 
 app.Run();
+
+// Cho phép WebApplicationFactory<Program> dùng trong test
+public partial class Program;

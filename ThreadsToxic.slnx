@@ -2,4 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/ThreadsToxic.Web/ThreadsToxic.Web.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ThreadsToxic.Tests/ThreadsToxic.Tests.csproj" />
+  </Folder>
 </Solution>
