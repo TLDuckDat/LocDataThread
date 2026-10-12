@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS comments (
 
 CREATE TABLE IF NOT EXISTS moderation_audits (
     id          BIGSERIAL PRIMARY KEY,
-    comment_id  VARCHAR(100) NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+    comment_id  VARCHAR(100) NOT NULL REFERENCES comments(id) ON DELETE RESTRICT,
     user_name   VARCHAR(60) NOT NULL,
     action      VARCHAR(30) NOT NULL,              -- 'exclude' | 'restore'
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()

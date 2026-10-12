@@ -78,6 +78,14 @@ public static class TestDb
         return (bool)(await cmd.ExecuteScalarAsync() ?? throw new InvalidOperationException($"Không có {id}"));
     }
 
+    public static async Task DeleteCommentAsync(string id)
+    {
+        await using var connection = Open();
+        await using var cmd = new NpgsqlCommand("DELETE FROM comments WHERE id = @id", connection);
+        cmd.Parameters.AddWithValue("id", id);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
     public static async Task<int> CountAsync(string sql)
     {
         await using var connection = Open();
