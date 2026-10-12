@@ -7,7 +7,8 @@ namespace ThreadsToxic.Tests.Infrastructure;
 public record ListResult(int Total, int Page, int PageSize, List<ItemView> Items);
 public record ItemView(string Id, string Content, int ReplyLevel, float ToxicScore, bool IsExcluded, string? ExcludedBy);
 public record CountsResult(int Active, int Excluded);
-public record MoveResult(int Moved, int Skipped, List<string>? Locked = null);
+public record MoveResult(int Moved, int Skipped, List<string>? Locked = null, List<string>? MovedIds = null);
+public record UndoResult(int Undone, List<string> UndoneIds, List<string> Conflicts, int Skipped, List<string> Locked);
 
 /// <summary>
 /// Mỗi test bắt đầu và kết thúc với database test trống.
@@ -60,6 +61,30 @@ public abstract class IntegrationTestBase<TFactory> : IClassFixture<TFactory>, I
     {
         var actor = await ActorAsync(userName);
         return await MoveWithTokenAsync(actor.Token, new { ids = ids.ToArray(), toExcluded, force });
+    }
+
+    /// <summary>Hoàn tác với tư cách <paramref name="userName"/>; toExcluded = trạng thái muốn đưa về.</summary>
+    protected async Task<(HttpStatusCode Status, UndoResult? Result)> UndoAsync(
+        IEnumerable<string> ids, bool toExcluded, string userName)
+    {
+        var actor = await ActorAsync(userName);
+        return await UndoWithTokenAsync(actor.Token, new { ids = ids.ToArray(), toExcluded });
+    }
+
+    protected async Task<(HttpStatusCode Status, UndoResult? Result)> UndoWithTokenAsync(
+        string? token, object body)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/items/undo")
+        {
+            Content = JsonContent.Create(body),
+        };
+        if (token is not null) request.Headers.Add("X-Session-Token", token);
+
+        var response = await Http.SendAsync(request);
+        var result = response.IsSuccessStatusCode
+            ? await response.Content.ReadFromJsonAsync<UndoResult>()
+            : null;
+        return (response.StatusCode, result);
     }
 
     /// <summary>Gọi move với token và body tùy ý (dùng cho test bảo mật).</summary>

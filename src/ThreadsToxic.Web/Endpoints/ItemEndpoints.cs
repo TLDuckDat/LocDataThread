@@ -43,6 +43,9 @@ public record ItemDto(
 // Force = true: vượt qua khóa của người khác (được ghi audit với action có tiền tố "force_").
 public record MoveRequest(List<string> Ids, bool ToExcluded, bool Force = false);
 
+// Hoàn tác: ToExcluded là trạng thái muốn đưa về (ngược với thao tác ban đầu).
+public record UndoRequest(List<string> Ids, bool ToExcluded);
+
 public static class ItemEndpoints
 {
     private const int MaxMoveBatch = 500;
@@ -56,6 +59,7 @@ public static class ItemEndpoints
         group.MapGet("/", ListAsync);
         group.MapGet("/counts", CountsAsync);
         group.MapPost("/move", MoveAsync);
+        group.MapPost("/undo", UndoAsync);
     }
 
     private static async Task<IResult> ListAsync([AsParameters] ItemQuery q, AppDbContext db, CancellationToken ct)
@@ -193,21 +197,133 @@ public static class ItemEndpoints
 
         await tx.CommitAsync(ct);
 
-        if (changed.Count > 0)
-        {
-            foreach (var id in state.ReleaseItems(changed))
-                await hub.Clients.Group(CollabHub.Room).SendAsync("LockChanged", id, null, ct);
-
-            await hub.Clients.Group(CollabHub.Room).SendAsync("ItemsMoved",
-                new { ids = changed, toExcluded = req.ToExcluded, by = userName }, ct);
-        }
+        await BroadcastMovedAsync(hub, state, changed, req.ToExcluded, userName, undo: false, ct);
 
         return TypedResults.Ok<object>(new
         {
             moved = changed.Count,
+            movedIds = changed,       // đúng các id đã đổi thật: dùng cho Hoàn tác
             skipped = targetIds.Length - changed.Count,
             locked = lockedIds,
         });
+    }
+
+    // Hoàn tác thao tác của CHÍNH MÌNH: chỉ áp dụng cho bình luận mà audit gần nhất vẫn là của người gọi.
+    // Bình luận mà người khác đã thao tác sau đó được báo trong "conflicts" và không bị đổi.
+    private static async Task<Results<Ok<object>, BadRequest<string>, UnauthorizedHttpResult>> UndoAsync(
+        UndoRequest req,
+        [FromHeader(Name = SessionHeader)] string? sessionToken,
+        AppDbContext db,
+        IHubContext<CollabHub> hub,
+        CollabState state,
+        CancellationToken ct)
+    {
+        var session = state.ResolveSession(sessionToken);
+        if (session is null)
+            return TypedResults.Unauthorized();
+        var userName = session.UserName;
+
+        var ids = (req.Ids ?? new()).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().ToArray();
+        if (ids.Length is 0)
+            return TypedResults.BadRequest("Chưa chọn bình luận nào.");
+        if (ids.Length > MaxMoveBatch)
+            return TypedResults.BadRequest($"Mỗi lần chỉ thao tác tối đa {MaxMoveBatch} bình luận.");
+
+        // Hoàn tác cũng tôn trọng khóa của người khác (giống move, không có force).
+        var heldByOthers = state.GetLeases(DateTimeOffset.UtcNow)
+            .Where(lease => lease.Holder != userName)
+            .Select(lease => lease.ItemId)
+            .ToHashSet();
+        var lockedIds = ids.Where(heldByOthers.Contains).ToArray();
+        var candidates = ids.Except(lockedIds).ToArray();
+
+        if (candidates.Length == 0)
+        {
+            return TypedResults.Ok<object>(new
+            {
+                undone = 0, undoneIds = Array.Empty<string>(), conflicts = Array.Empty<string>(),
+                skipped = 0, locked = lockedIds,
+            });
+        }
+
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+
+        // Khóa các dòng trước khi đọc audit để không ai chen vào giữa lúc kiểm tra và cập nhật.
+        await db.Database.SqlQuery<string>($"""
+            SELECT id FROM comments WHERE id = ANY({candidates}) ORDER BY id FOR UPDATE
+            """).ToListAsync(ct);
+
+        var mine = await db.Database.SqlQuery<string>($"""
+            SELECT comment_id FROM (
+                SELECT DISTINCT ON (comment_id) comment_id, user_name
+                FROM moderation_audits
+                WHERE comment_id = ANY({candidates})
+                ORDER BY comment_id, id DESC
+            ) latest
+            WHERE user_name = {userName}
+            """).ToListAsync(ct);
+
+        var eligible = mine.ToArray();
+        var conflicts = candidates.Except(eligible).ToArray();
+
+        var changed = new List<string>();
+        if (eligible.Length > 0)
+        {
+            if (req.ToExcluded)
+            {
+                changed = await db.Database.SqlQuery<string>($"""
+                    UPDATE comments
+                    SET is_excluded = TRUE, excluded_by = {userName}, excluded_at = NOW()
+                    WHERE id = ANY({eligible}) AND is_excluded = FALSE
+                    RETURNING id
+                    """).ToListAsync(ct);
+            }
+            else
+            {
+                changed = await db.Database.SqlQuery<string>($"""
+                    UPDATE comments
+                    SET is_excluded = FALSE, excluded_by = NULL, excluded_at = NULL
+                    WHERE id = ANY({eligible}) AND is_excluded = TRUE
+                    RETURNING id
+                    """).ToListAsync(ct);
+            }
+        }
+
+        if (changed.Count > 0)
+        {
+            var changedArray = changed.ToArray();
+            var action = req.ToExcluded ? "exclude" : "restore";
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO moderation_audits (comment_id, user_name, action)
+                SELECT x, {userName}, {action} FROM unnest({changedArray}) AS x
+                """, ct);
+        }
+
+        await tx.CommitAsync(ct);
+
+        await BroadcastMovedAsync(hub, state, changed, req.ToExcluded, userName, undo: true, ct);
+
+        return TypedResults.Ok<object>(new
+        {
+            undone = changed.Count,
+            undoneIds = changed,
+            conflicts,
+            skipped = eligible.Length - changed.Count,
+            locked = lockedIds,
+        });
+    }
+
+    private static async Task BroadcastMovedAsync(
+        IHubContext<CollabHub> hub, CollabState state, List<string> changed,
+        bool toExcluded, string userName, bool undo, CancellationToken ct)
+    {
+        if (changed.Count == 0) return;
+
+        foreach (var id in state.ReleaseItems(changed))
+            await hub.Clients.Group(CollabHub.Room).SendAsync("LockChanged", id, null, ct);
+
+        await hub.Clients.Group(CollabHub.Room).SendAsync("ItemsMoved",
+            new { ids = changed, toExcluded, by = userName, undo }, ct);
     }
 
     // Tránh ký tự đại diện của LIKE bị hiểu nhầm khi người dùng gõ % hoặc _

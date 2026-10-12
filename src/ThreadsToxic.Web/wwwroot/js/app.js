@@ -51,7 +51,7 @@
     return Number.isNaN(d.getTime()) ? raw : d.toLocaleString("vi-VN");
   };
 
-  // options: { actionLabel, onAction, ms }. Nút hành động (vd. "Hoàn tác", "Vẫn chuyển") là tùy chọn.
+  // options: { actions: [{ label, onClick }], ms }. Nút hành động (vd. "Hoàn tác", "Vẫn chuyển") là tùy chọn.
   const toast = (message, options = {}) => {
     const el = document.createElement("div");
     el.className = "toast";
@@ -60,14 +60,14 @@
     text.textContent = message;
     el.append(text);
 
-    if (options.actionLabel && options.onAction) {
+    for (const action of options.actions || []) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "toast-action";
-      button.textContent = options.actionLabel;
+      button.textContent = action.label;
       button.addEventListener("click", () => {
         el.remove();
-        options.onAction();
+        action.onClick();
       });
       el.append(button);
     }
@@ -97,17 +97,17 @@
 
   // Gọi API ghi bằng token phiên do server cấp. Token hết hạn (401, ví dụ sau khi kết nối lại)
   // thì Join lại để lấy token mới và thử lại đúng một lần.
-  async function postMove(ids, toExcluded, force = false, canRetry = true) {
+  async function postWithSession(path, body, canRetry = true) {
     try {
-      return await api("/api/items/move", {
+      return await api(path, {
         method: "POST",
         headers: { "X-Session-Token": state.token || "" },
-        body: JSON.stringify({ ids, toExcluded, force }),
+        body: JSON.stringify(body),
       });
     } catch (err) {
       if (err.status === 401 && canRetry) {
         await joinRoom();
-        return postMove(ids, toExcluded, force, false);
+        return postWithSession(path, body, false);
       }
       throw err;
     }
@@ -303,35 +303,56 @@
   }
 
   // ---------- Thao tác chuyển bình luận ----------
+  const UNDO_WINDOW_MS = 8000;
+
   // Server quyết định bình luận nào bị khóa bởi người khác (trả về trong result.locked).
   async function moveItems(ids, toExcluded, { force = false } = {}) {
     if (!ids.length) return;
 
     try {
-      const result = await postMove(ids, toExcluded, force);
+      const result = await postWithSession("/api/items/move", { ids, toExcluded, force });
       const locked = result.locked || [];
+      const movedIds = result.movedIds || [];
       const handled = ids.filter((id) => !locked.includes(id));
 
       const verb = toExcluded ? "Đã loại" : "Đã khôi phục";
       let message = `${verb} ${result.moved} bình luận.`;
       if (result.skipped) message += ` ${result.skipped} bình luận đã ở đúng mục.`;
 
+      const actions = [];
+      if (movedIds.length) {
+        // Hoàn tác chỉ đụng tới các id đã đổi thật, không phải toàn bộ lô đã chọn.
+        actions.push({ label: "Hoàn tác", onClick: () => undoItems(movedIds, !toExcluded) });
+      }
       if (locked.length) {
         const holders = [...new Set(locked.map((id) => state.locks[id]).filter(Boolean))];
         message += ` Bỏ qua ${locked.length} bình luận đang được ${holders.join(", ") || "đồng đội"} xem.`;
-        toast(message, {
-          actionLabel: "Vẫn chuyển",
-          onAction: () => moveItems(locked, toExcluded, { force: true }),
-          ms: 8000,
-        });
-      } else {
-        toast(message);
+        actions.push({ label: "Vẫn chuyển", onClick: () => moveItems(locked, toExcluded, { force: true }) });
       }
+      toast(message, { actions, ms: actions.length ? UNDO_WINDOW_MS : undefined });
 
       for (const id of handled) state.selected.delete(id);
       if (handled.includes(state.focusId)) setFocus(null);
     } catch (err) {
       toast(`Thao tác thất bại: ${err.message}`);
+    }
+    scheduleReload();
+  }
+
+  // Hoàn tác thao tác của chính mình. Bình luận đã bị người khác thao tác sau đó được giữ nguyên.
+  async function undoItems(ids, toExcluded) {
+    try {
+      const result = await postWithSession("/api/items/undo", { ids, toExcluded });
+      let message = `Đã hoàn tác ${result.undone} bình luận.`;
+      if (result.conflicts.length) {
+        message += ` ${result.conflicts.length} bình luận đã bị người khác thao tác sau đó nên giữ nguyên.`;
+      }
+      if (result.locked.length) {
+        message += ` ${result.locked.length} bình luận đang được đồng đội xem nên bỏ qua.`;
+      }
+      toast(message, { ms: result.conflicts.length || result.locked.length ? UNDO_WINDOW_MS : undefined });
+    } catch (err) {
+      toast(`Không hoàn tác được: ${err.message}`);
     }
     scheduleReload();
   }
