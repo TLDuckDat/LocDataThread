@@ -20,6 +20,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
            .UseSnakeCaseNamingConvention());
 
 builder.Services.AddSignalR();
+builder.Services.Configure<CollabOptions>(builder.Configuration.GetSection("Collab"));
 builder.Services.AddSingleton<CollabState>();
 builder.Services.AddHostedService<LeaseSweeper>();
 

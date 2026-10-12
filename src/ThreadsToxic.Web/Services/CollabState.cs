@@ -1,10 +1,12 @@
+using Microsoft.Extensions.Options;
+
 namespace ThreadsToxic.Web.Services;
 
 // Trạng thái cộng tác trong bộ nhớ: ai đang online, ai đang giữ bình luận nào (lease lock).
 // Chỉ chạy trên một tiến trình; nếu cần nhiều máy chủ thì chuyển sang Redis.
-public class CollabState
+public class CollabState(IOptions<CollabOptions> options)
 {
-    public static readonly TimeSpan LeaseDuration = TimeSpan.FromSeconds(45);
+    private readonly TimeSpan _leaseDuration = options.Value.Lease;
 
     private readonly object _gate = new();
     private readonly Dictionary<string, string> _usersByConnection = new();
@@ -34,7 +36,7 @@ public class CollabState
                 return (false, current.UserName);
             }
 
-            _leasesByItem[itemId] = new Lease(connectionId, name, now + LeaseDuration);
+            _leasesByItem[itemId] = new Lease(connectionId, name, now + _leaseDuration);
             return (true, name);
         }
     }
