@@ -1,0 +1,15 @@
+# Không đưa bí mật, dữ liệu và file build vào ngữ cảnh build của Docker
+.env
+.env.*
+!.env.example
+backups/
+*.dump
+**/bin/
+**/obj/
+.git/
+.vs/
+**/*.user
+tests/
+tools/
+db/
+**/__pycache__/

@@ -15,8 +15,11 @@ public record ItemQuery(
     int? ReplyLevel,     // 0..3
     string? Keyword,     // tìm trong nội dung
     string? Word,        // từ khóa đã khớp (JSONB)
+    string? Source,      // "main" | "review" | lý do cụ thể (vd "duplicate_content"); trống = mọi nguồn
     int? Page,
-    int? PageSize);
+    int? PageSize,
+    string? Review,      // "unreviewed" | "reviewed"; trống = tất cả
+    string? ReviewedBy); // lọc theo người xử lý gần nhất
 
 public record ItemDto(
     string Id,
@@ -37,7 +40,10 @@ public record ItemDto(
     List<string> Categories,
     bool IsExcluded,
     string? ExcludedBy,
-    DateTimeOffset? ExcludedAt);
+    DateTimeOffset? ExcludedAt,
+    string? Source,
+    string? ReviewedBy,
+    DateTimeOffset? ReviewedAt);
 
 // Tên người thao tác lấy từ phiên phía server (header X-Session-Token), không nhận từ body.
 // Force = true: vượt qua khóa của người khác (được ghi audit với action có tiền tố "force_").
@@ -47,6 +53,13 @@ public record MoveRequest(List<string> Ids, bool ToExcluded, bool Force = false)
 
 // Hoàn tác: ToExcluded là trạng thái muốn đưa về (ngược với thao tác ban đầu).
 public record UndoRequest(List<string> Ids, bool ToExcluded);
+
+public record ApproveRequest(List<string> Ids);
+
+public record ReviewerCount(string Name, int Count);
+
+public record ProgressResult(int Active, int Excluded, int Reviewed, int ReviewedToday,
+    List<ReviewerCount> ByReviewer, List<ReviewerCount> TodayByReviewer);
 
 public static class ItemEndpoints
 {
@@ -62,9 +75,41 @@ public static class ItemEndpoints
         group.MapGet("/counts", CountsAsync);
         group.MapPost("/move", MoveAsync);
         group.MapPost("/undo", UndoAsync);
+        group.MapPost("/approve", ApproveAsync);
+        group.MapGet("/progress", ProgressAsync);
     }
 
-    private static async Task<IResult> ListAsync([AsParameters] ItemQuery q, AppDbContext db, CancellationToken ct)
+    private static async Task<IResult> ListAsync(
+        [AsParameters] ItemQuery q, IDbContextFactory<AppDbContext> dbf, CancellationToken ct)
+    {
+        var page = Math.Max(1, q.Page ?? 1);
+        var pageSize = Math.Clamp(q.PageSize ?? 50, 10, 200);
+
+        // Ba truy vấn độc lập chạy song song, mỗi cái một kết nối
+        var totalTask = dbf.RunAsync(db => Filter(db, q).CountAsync(ct), ct);
+        var rowsTask = dbf.RunAsync(db => Filter(db, q)
+            .OrderByDescending(c => c.ToxicScore)
+            .ThenBy(c => c.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(c => new { c.Id, c.Content, c.AuthorUsername, c.AuthorName, c.PostUrl, c.CommentUrl,
+                c.PostedAt, c.ReplyLevel, c.ToxicScore, c.Severity, c.F0, c.F1, c.F2, c.F3,
+                c.AnalysisData, c.IsExcluded, c.ExcludedBy, c.ExcludedAt, c.Source, c.ReviewedBy, c.ReviewedAt })
+            .ToListAsync(ct), ct);
+        var countsTask = dbf.RunAsync(db => GetCountsAsync(db, ct), ct);
+        await Task.WhenAll(totalTask, rowsTask, countsTask);
+
+        var items = rowsTask.Result.Select(c => new ItemDto(
+            c.Id, c.Content, c.AuthorUsername, c.AuthorName, c.PostUrl, c.CommentUrl,
+            c.PostedAt, c.ReplyLevel, c.ToxicScore, c.Severity,
+            c.F0, c.F1, c.F2, c.F3,
+            c.AnalysisData.MatchedWords, c.AnalysisData.Categories,
+            c.IsExcluded, c.ExcludedBy, c.ExcludedAt, c.Source, c.ReviewedBy, c.ReviewedAt));
+
+        return Results.Ok(new { total = totalTask.Result, page, pageSize, items, counts = countsTask.Result });
+    }
+
+    private static IQueryable<Comment> Filter(AppDbContext db, ItemQuery q)
     {
         var excluded = string.Equals(q.Bucket, "excluded", StringComparison.OrdinalIgnoreCase);
         var query = db.Comments.AsNoTracking().Where(c => c.IsExcluded == excluded);
@@ -90,29 +135,29 @@ public static class ItemEndpoints
             query = query.Where(c => EF.Functions.JsonContains(c.AnalysisData, containment));
         }
 
-        var page = Math.Max(1, q.Page ?? 1);
-        var pageSize = Math.Clamp(q.PageSize ?? 50, 10, 200);
+        if (string.Equals(q.Review, "unreviewed", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(c => c.ReviewedBy == null);
+        else if (string.Equals(q.Review, "reviewed", StringComparison.OrdinalIgnoreCase))
+            query = query.Where(c => c.ReviewedBy != null);
 
-        var total = await query.CountAsync(ct);
-        var rows = await query
-            .OrderByDescending(c => c.ToxicScore)
-            .ThenBy(c => c.Id)
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .Select(c => new { c.Id, c.Content, c.AuthorUsername, c.AuthorName, c.PostUrl, c.CommentUrl,
-                c.PostedAt, c.ReplyLevel, c.ToxicScore, c.Severity, c.F0, c.F1, c.F2, c.F3,
-                c.AnalysisData, c.IsExcluded, c.ExcludedBy, c.ExcludedAt })
-            .ToListAsync(ct);
+        if (!string.IsNullOrWhiteSpace(q.ReviewedBy))
+        {
+            var reviewer = q.ReviewedBy.Trim();
+            query = query.Where(c => c.ReviewedBy == reviewer);
+        }
 
-        var items = rows.Select(c => new ItemDto(
-            c.Id, c.Content, c.AuthorUsername, c.AuthorName, c.PostUrl, c.CommentUrl,
-            c.PostedAt, c.ReplyLevel, c.ToxicScore, c.Severity,
-            c.F0, c.F1, c.F2, c.F3,
-            c.AnalysisData.MatchedWords, c.AnalysisData.Categories,
-            c.IsExcluded, c.ExcludedBy, c.ExcludedAt));
+        if (!string.IsNullOrWhiteSpace(q.Source))
+        {
+            var source = q.Source.Trim();
+            query = source.ToLowerInvariant() switch
+            {
+                "main" => query.Where(c => c.Source == null),
+                "review" => query.Where(c => c.Source != null),
+                _ => query.Where(c => c.Source == source),
+            };
+        }
 
-        var counts = await GetCountsAsync(db, ct);
-        return Results.Ok(new { total, page, pageSize, items, counts });
+        return query;
     }
 
     private static async Task<IResult> CountsAsync(AppDbContext db, CancellationToken ct) =>
@@ -174,7 +219,8 @@ public static class ItemEndpoints
             action = "exclude";
             changed = await db.Database.SqlQuery<string>($"""
                 UPDATE comments
-                SET is_excluded = TRUE, excluded_by = {userName}, excluded_at = NOW()
+                SET is_excluded = TRUE, excluded_by = {userName}, excluded_at = NOW(),
+                    reviewed_by = {userName}, reviewed_at = NOW()
                 WHERE id = ANY({targetIds}) AND is_excluded = FALSE
                 RETURNING id
                 """).ToListAsync(ct);
@@ -184,7 +230,8 @@ public static class ItemEndpoints
             action = "restore";
             changed = await db.Database.SqlQuery<string>($"""
                 UPDATE comments
-                SET is_excluded = FALSE, excluded_by = NULL, excluded_at = NULL
+                SET is_excluded = FALSE, excluded_by = NULL, excluded_at = NULL,
+                    reviewed_by = {userName}, reviewed_at = NOW()
                 WHERE id = ANY({targetIds}) AND is_excluded = TRUE
                 RETURNING id
                 """).ToListAsync(ct);
@@ -279,7 +326,8 @@ public static class ItemEndpoints
             {
                 changed = await db.Database.SqlQuery<string>($"""
                     UPDATE comments
-                    SET is_excluded = TRUE, excluded_by = {userName}, excluded_at = NOW()
+                    SET is_excluded = TRUE, excluded_by = {userName}, excluded_at = NOW(),
+                        reviewed_by = {userName}, reviewed_at = NOW()
                     WHERE id = ANY({eligible}) AND is_excluded = FALSE
                     RETURNING id
                     """).ToListAsync(ct);
@@ -288,7 +336,8 @@ public static class ItemEndpoints
             {
                 changed = await db.Database.SqlQuery<string>($"""
                     UPDATE comments
-                    SET is_excluded = FALSE, excluded_by = NULL, excluded_at = NULL
+                    SET is_excluded = FALSE, excluded_by = NULL, excluded_at = NULL,
+                        reviewed_by = {userName}, reviewed_at = NOW()
                     WHERE id = ANY({eligible}) AND is_excluded = TRUE
                     RETURNING id
                     """).ToListAsync(ct);
@@ -319,6 +368,87 @@ public static class ItemEndpoints
         });
     }
 
+    // Giữ lại: đánh dấu đã duyệt, bình luận vẫn ở "Đang lọc". Chỉ áp dụng cho bình luận đang lọc.
+    private static async Task<Results<Ok<object>, BadRequest<string>, UnauthorizedHttpResult>> ApproveAsync(
+        ApproveRequest req,
+        [FromHeader(Name = SessionHeader)] string? sessionToken,
+        AppDbContext db,
+        IHubContext<CollabHub> hub,
+        CollabState state,
+        CancellationToken ct)
+    {
+        var session = state.ResolveSession(sessionToken);
+        if (session is null)
+            return TypedResults.Unauthorized();
+        var userName = session.UserName;
+
+        var ids = (req.Ids ?? new()).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().ToArray();
+        if (ids.Length is 0)
+            return TypedResults.BadRequest("Chưa chọn bình luận nào.");
+        if (ids.Length > MaxMoveBatch)
+            return TypedResults.BadRequest($"Mỗi lần chỉ thao tác tối đa {MaxMoveBatch} bình luận.");
+
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var approved = await db.Database.SqlQuery<string>($"""
+            UPDATE comments
+            SET reviewed_by = {userName}, reviewed_at = NOW()
+            WHERE id = ANY({ids}) AND is_excluded = FALSE
+            RETURNING id
+            """).ToListAsync(ct);
+
+        if (approved.Count > 0)
+        {
+            var approvedArray = approved.ToArray();
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO moderation_audits (comment_id, user_name, action)
+                SELECT x, {userName}, 'approve' FROM unnest({approvedArray}) AS x
+                """, ct);
+        }
+        await tx.CommitAsync(ct);
+
+        if (approved.Count > 0)
+            await hub.Clients.Group(CollabHub.Room).SendAsync("ItemsReviewed", new { ids = approved, by = userName }, ct);
+
+        return TypedResults.Ok<object>(new
+        {
+            approved = approved.Count,
+            approvedIds = approved,
+            skipped = ids.Length - approved.Count,
+        });
+    }
+
+    // Tiến độ lọc: tổng đã xử lý và theo từng người (tổng và trong ngày theo giờ máy chủ)
+    private static async Task<IResult> ProgressAsync(IDbContextFactory<AppDbContext> dbf, CancellationToken ct)
+    {
+        // Npgsql chỉ nhận timestamptz theo UTC: đổi mốc đầu ngày địa phương sang UTC
+        var startOfToday = new DateTimeOffset(DateTime.Today).ToUniversalTime();
+        static IQueryable<Comment> Reviewed(AppDbContext db) =>
+            db.Comments.AsNoTracking().Where(c => c.ReviewedBy != null);
+
+        // Gom nhóm trả về anonymous rồi map trong bộ nhớ (projection về record không dịch được sang SQL)
+        static async Task<List<ReviewerCount>> TopReviewersAsync(IQueryable<Comment> reviewed, CancellationToken ct) =>
+            (await reviewed
+                .GroupBy(c => c.ReviewedBy!)
+                .Select(g => new { Name = g.Key, Count = g.Count() })
+                .OrderByDescending(r => r.Count)
+                .Take(30)
+                .ToListAsync(ct))
+            .Select(r => new ReviewerCount(r.Name, r.Count)).ToList();
+
+        // Năm truy vấn độc lập chạy song song, mỗi cái một kết nối
+        var countsTask = dbf.RunAsync(db => GetCountsAsync(db, ct), ct);
+        var reviewedTask = dbf.RunAsync(db => Reviewed(db).CountAsync(ct), ct);
+        var reviewedTodayTask = dbf.RunAsync(db => Reviewed(db).CountAsync(c => c.ReviewedAt >= startOfToday, ct), ct);
+        var byReviewerTask = dbf.RunAsync(db => TopReviewersAsync(Reviewed(db), ct), ct);
+        var todayByReviewerTask = dbf.RunAsync(
+            db => TopReviewersAsync(Reviewed(db).Where(c => c.ReviewedAt >= startOfToday), ct), ct);
+        await Task.WhenAll(countsTask, reviewedTask, reviewedTodayTask, byReviewerTask, todayByReviewerTask);
+
+        var counts = countsTask.Result;
+        return Results.Ok(new ProgressResult(counts.Active, counts.Excluded, reviewedTask.Result,
+            reviewedTodayTask.Result, byReviewerTask.Result, todayByReviewerTask.Result));
+    }
+
     private static async Task BroadcastMovedAsync(
         AppDbContext db, IHubContext<CollabHub> hub, CollabState state, List<string> changed,
         bool toExcluded, string userName, bool undo, CancellationToken ct)
@@ -337,6 +467,6 @@ public static class ItemEndpoints
     }
 
     // Tránh ký tự đại diện của LIKE bị hiểu nhầm khi người dùng gõ % hoặc _
-    private static string EscapeLike(string value) =>
+    internal static string EscapeLike(string value) =>
         value.Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_");
 }

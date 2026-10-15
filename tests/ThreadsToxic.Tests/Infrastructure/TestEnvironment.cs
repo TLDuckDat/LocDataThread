@@ -5,16 +5,16 @@ namespace ThreadsToxic.Tests.Infrastructure;
 /// <summary>
 /// Chuỗi kết nối cho test. Fail-fast nếu không trỏ tới database threads_toxic_test,
 /// để test không bao giờ chạm vào dữ liệu thật.
+/// Mặc định tự dựng Postgres tạm trong Docker; THREADS_TEST_CONNECTION để dùng database có sẵn.
 /// </summary>
 public static class TestEnvironment
 {
     public const string RequiredDatabase = "threads_toxic_test";
 
-    private const string DefaultConnection =
-        "Host=localhost;Port=5432;Database=threads_toxic_test;Username=postgres";
+    private static readonly Lazy<string> Connection = new(() =>
+        Validate(Environment.GetEnvironmentVariable("THREADS_TEST_CONNECTION") ?? TestDatabaseContainer.Start()));
 
-    public static string ConnectionString { get; } =
-        Validate(Environment.GetEnvironmentVariable("THREADS_TEST_CONNECTION") ?? DefaultConnection);
+    public static string ConnectionString => Connection.Value;
 
     public static string Validate(string connection)
     {

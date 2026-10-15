@@ -1,0 +1,8 @@
+# Script chạy bằng sh / trong Linux phải giữ LF kể cả khi clone trên Windows (core.autocrlf)
+.githooks/* text eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf
+
+# Ảnh và dữ liệu nhị phân: không đổi xuống dòng
+*.png binary
+*.xlsx binary

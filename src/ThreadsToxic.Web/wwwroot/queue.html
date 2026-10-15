@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kho phụ · Lọc cộng tác</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Kho phụ <span>(hàng chờ lọc trùng)</span></div>
+    <div id="presence" class="presence" aria-label="Đồng đội đang online"></div>
+    <a class="btn ghost" href="./">← Về danh sách lọc</a>
+    <div id="status" class="status" data-state="connecting">Đang kết nối…</div>
+  </header>
+
+  <main class="layout single">
+    <section class="board" aria-label="Kho phụ">
+      <p id="summary" class="note info"></p>
+
+      <nav class="tabs" role="tablist">
+        <button class="tab is-active" data-decision="pending" role="tab">Chờ quyết định <b id="countPending">0</b></button>
+        <button class="tab" data-decision="promoted" role="tab">Đã đưa vào CSDL chính <b id="countPromoted">0</b></button>
+        <button class="tab" data-decision="rejected" role="tab">Đã loại <b id="countRejected">0</b></button>
+      </nav>
+
+      <form class="filters queue-filters" id="filters" autocomplete="off">
+        <input id="keyword" type="search" placeholder="Tìm trong nội dung…">
+        <select id="type" aria-label="Loại dữ liệu">
+          <option value="">Bình luận &amp; bài viết</option>
+          <option value="comment">Chỉ bình luận</option>
+          <option value="post">Chỉ bài viết</option>
+        </select>
+        <select id="reason" aria-label="Lý do"></select>
+        <select id="inMain" aria-label="Đã có trong CSDL chính">
+          <option value="hide">Ẩn bản đã có trong CSDL chính</option>
+          <option value="only">Chỉ bản đã có trong CSDL chính</option>
+          <option value="all">Tất cả</option>
+        </select>
+      </form>
+
+      <div class="actionbar">
+        <label class="selectall"><input type="checkbox" id="selectPage"> Chọn trang này</label>
+        <span id="selCount" class="muted">Đã chọn 0</span>
+        <button id="clearSel" class="btn ghost" type="button">Bỏ chọn</button>
+        <button id="rejectBtn" class="btn" type="button">Loại (R)</button>
+        <button id="promoteBtn" class="btn primary" type="button">Đưa vào CSDL chính (P)</button>
+      </div>
+
+      <div class="bulk" id="bulkBox" hidden>
+        <span class="muted">Áp dụng cho <b id="bulkCount">0</b> kết quả khớp bộ lọc:</span>
+        <button id="bulkPromote" class="btn" type="button">Đưa tất cả vào CSDL chính</button>
+        <button id="bulkReject" class="btn" type="button">Loại tất cả</button>
+      </div>
+
+      <div id="list" class="list" aria-live="polite"></div>
+
+      <nav class="pager">
+        <button id="prev" class="btn ghost" type="button">← Trước</button>
+        <span id="pageInfo" class="muted"></span>
+        <button id="next" class="btn ghost" type="button">Sau →</button>
+      </nav>
+    </section>
+  </main>
+
+  <div class="hotkeys muted">Phím tắt: <kbd>J</kbd>/<kbd>K</kbd> di chuyển · <kbd>Space</kbd> chọn · <kbd>P</kbd> đưa vào CSDL chính · <kbd>R</kbd> loại</div>
+
+  <div id="nameModal" class="modal" hidden>
+    <form id="nameForm" class="modal-card">
+      <h2>Bạn là ai?</h2>
+      <p class="muted">Tên này được ghi lại cho mọi quyết định bạn đưa ra trong kho phụ.</p>
+      <input id="nameInput" maxlength="40" required placeholder="Ví dụ: Minh">
+      <button class="btn primary" type="submit">Vào kho phụ</button>
+    </form>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="js/vendor/signalr.min.js"></script>
+  <script src="js/util.js"></script>
+  <script src="js/queue.js"></script>
+</body>
+</html>

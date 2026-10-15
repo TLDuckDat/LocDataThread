@@ -1,4 +1,4 @@
-// Tiện ích thuần (không phụ thuộc DOM) để chèn dữ liệu không tin cậy vào HTML.
+// Tiện ích thuần (không phụ thuộc DOM): chèn dữ liệu không tin cậy vào HTML, bộ đệm trang tải trước.
 // Dùng được cả trong trình duyệt (window.ThreadsUtil) lẫn Node (require) để kiểm thử.
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
@@ -29,5 +29,33 @@
     return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : fallback;
   }
 
-  return { esc, safeUrl, toInt };
+  // Bộ đệm trang tải trước (vd. trang kế tiếp) để chuyển trang không phải chờ một lượt đi về server.
+  // Khóa là chuỗi tham số; lưu promise nên request tải trước còn đang chạy cũng được dùng lại.
+  // Bản tải trước dùng một lần, quá maxAgeMs thì bỏ; clear() khi dữ liệu vừa đổi.
+  function createPageCache(maxAgeMs = 15000, now = () => Date.now()) {
+    const entries = new Map();   // key -> { promise, at }
+    const fresh = (entry) => entry && now() - entry.at <= maxAgeMs;
+
+    return {
+      // Lấy trang: dùng bản tải trước nếu còn mới (lỗi thì tải lại), ngược lại gọi load(key).
+      get(key, load) {
+        const entry = entries.get(key);
+        entries.delete(key);
+        return fresh(entry) ? entry.promise.catch(() => load(key)) : load(key);
+      },
+      // Tải trước ở nền; lỗi không báo ra ngoài (lần get sau tự tải lại).
+      prefetch(key, load) {
+        if (fresh(entries.get(key))) return;
+        const promise = load(key);
+        promise.catch(() => {
+          if (entries.get(key)?.promise === promise) entries.delete(key);
+        });
+        entries.set(key, { promise, at: now() });
+      },
+      clear() { entries.clear(); },
+      get size() { return entries.size; },
+    };
+  }
+
+  return { esc, safeUrl, toInt, createPageCache };
 });

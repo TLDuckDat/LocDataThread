@@ -1,8 +1,9 @@
 """Kiểm thử giao diện end-to-end (Playwright + Edge) cho H1, H2, H4, H5, H6.
 
 Yêu cầu:
-  - App đang chạy tại http://localhost:5055 và trỏ vào database threads_toxic_test:
-      $env:ConnectionStrings__Default = "Host=localhost;Port=5432;Database=threads_toxic_test;Username=postgres"
+  - Postgres test trong Docker: powershell -ExecutionPolicy Bypass -File tools/start_test_db.ps1
+  - App đang chạy tại http://localhost:5055 và trỏ vào database threads_toxic_test đó:
+      $env:ConnectionStrings__Default = "Host=localhost;Port=55432;Database=threads_toxic_test;Username=postgres;Password=postgres"
       dotnet run --project src/ThreadsToxic.Web --urls http://localhost:5055
   - pip install playwright psycopg2-binary
 
@@ -19,7 +20,8 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 
 URL = os.environ.get("THREADS_UI_URL", "http://localhost:5055/")
 DSN = os.environ.get(
-    "THREADS_TEST_DSN", "host=localhost port=5432 dbname=threads_toxic_test user=postgres")
+    "THREADS_TEST_DSN",
+    "host=localhost port=55432 dbname=threads_toxic_test user=postgres password=postgres")
 
 if "threads_toxic_test" not in DSN:
     raise SystemExit("DỪNG: DSN phải trỏ tới threads_toxic_test")
@@ -58,12 +60,19 @@ def seed():
         for rid, content, author, url, score, level, words in rows:
             cur.execute(
                 """INSERT INTO comments (id, post_id, post_url, comment_url, author_username, content,
-                                         reply_level, toxic_score, analysis_data)
-                   VALUES (%s, 'p', 'https://example.test/p', %s, %s, %s, %s, %s,
-                           jsonb_build_object('matched_words', %s::jsonb, 'matched_emojis', '[]'::jsonb,
+                                         reply_level, toxic_score, analysis_data, f0, f1, f2, f3)
+                   VALUES (%(id)s, 'p', 'https://example.test/p', %(url)s, %(author)s, %(content)s,
+                           %(level)s, %(score)s,
+                           jsonb_build_object('matched_words', %(words)s::jsonb, 'matched_emojis', '[]'::jsonb,
                                               'categories', '[]'::jsonb, 'has_emoji_slang', false,
-                                              'is_auto_toxic', false))""",
-                (rid, url, author, content, level, score, words))
+                                              'is_auto_toxic', false),
+                           -- chuỗi F0..F3 theo comments_chain_ck (migration 005)
+                           %(content)s,
+                           CASE WHEN %(level)s >= 1 THEN %(content)s ELSE '' END,
+                           CASE WHEN %(level)s >= 2 THEN %(content)s ELSE '' END,
+                           CASE WHEN %(level)s >= 3 THEN %(content)s ELSE '' END)""",
+                {"id": rid, "url": url, "author": author, "content": content, "level": level,
+                 "score": score, "words": words})
         cur.execute("UPDATE comments SET post_url = 'data:text/html,<script>window.__xss=1</script>' "
                     "WHERE id = 'x_xss2'")
 

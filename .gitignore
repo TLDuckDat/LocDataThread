@@ -15,3 +15,12 @@ backups/
 node_modules/
 __pycache__/
 *.pyc
+
+# Bí mật: chuỗi kết nối, khóa Supabase
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12

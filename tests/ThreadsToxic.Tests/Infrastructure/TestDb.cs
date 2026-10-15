@@ -9,7 +9,8 @@ public record SeedRow(
     int ReplyLevel = 0,
     float Score = 0.5f,
     string[]? Words = null,
-    bool Excluded = false);
+    bool Excluded = false,
+    string? Source = null);
 
 /// <summary>
 /// Truy cập trực tiếp database test để dựng và kiểm tra dữ liệu.
@@ -28,7 +29,16 @@ public static class TestDb
     public static async Task ResetAsync()
     {
         await using var connection = Open();
-        await using var cmd = new NpgsqlCommand("DELETE FROM moderation_audits; DELETE FROM comments;", connection);
+        await using var cmd = new NpgsqlCommand(
+            "DELETE FROM moderation_audits; DELETE FROM comments; DELETE FROM posts; DELETE FROM review_queue;", connection);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>Chạy một câu SQL tùy ý (dùng để đặt các cột không có trong SeedRow).</summary>
+    public static async Task ExecuteAsync(string sql)
+    {
+        await using var connection = Open();
+        await using var cmd = new NpgsqlCommand(sql, connection);
         await cmd.ExecuteNonQueryAsync();
     }
 
@@ -48,11 +58,16 @@ public static class TestDb
 
             await using var cmd = new NpgsqlCommand("""
                 INSERT INTO comments (id, post_id, post_url, content, reply_level, toxic_score,
-                                      analysis_data, is_excluded, excluded_by, excluded_at)
+                                      analysis_data, is_excluded, excluded_by, excluded_at, source,
+                                      f0, f1, f2, f3)
                 VALUES (@id, 'post_test', 'https://example.test/post', @content, @level, @score,
                         @analysis::jsonb, @excluded,
                         CASE WHEN @excluded THEN 'seed' END,
-                        CASE WHEN @excluded THEN NOW() END)
+                        CASE WHEN @excluded THEN NOW() END, @source,
+                        @content,
+                        CASE WHEN @level >= 1 THEN @content ELSE '' END,
+                        CASE WHEN @level >= 2 THEN @content ELSE '' END,
+                        CASE WHEN @level >= 3 THEN @content ELSE '' END)
                 """, connection);
             cmd.Parameters.AddWithValue("id", row.Id);
             cmd.Parameters.AddWithValue("content", row.Content ?? $"Nội dung {row.Id}");
@@ -60,6 +75,7 @@ public static class TestDb
             cmd.Parameters.AddWithValue("score", row.Score);
             cmd.Parameters.AddWithValue("analysis", analysis);
             cmd.Parameters.AddWithValue("excluded", row.Excluded);
+            cmd.Parameters.AddWithValue("source", (object?)row.Source ?? DBNull.Value);
             await cmd.ExecuteNonQueryAsync();
         }
     }
@@ -85,6 +101,39 @@ public static class TestDb
         cmd.Parameters.AddWithValue("id", id);
         await cmd.ExecuteNonQueryAsync();
     }
+
+    /// <summary>Chạy SQL có tham số (không nối chuỗi dữ liệu test vào câu lệnh).</summary>
+    public static async Task ExecuteParamAsync(string sql, params (string Name, object? Value)[] parameters)
+    {
+        await using var connection = Open();
+        await using var cmd = new NpgsqlCommand(sql, connection);
+        foreach (var (name, value) in parameters) cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>Đọc một giá trị có tham số; trả về null nếu SQL không có dòng nào.</summary>
+    public static async Task<object?> QueryScalarAsync(string sql, params (string Name, object? Value)[] parameters)
+    {
+        await using var connection = Open();
+        await using var cmd = new NpgsqlCommand(sql, connection);
+        foreach (var (name, value) in parameters) cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        var result = await cmd.ExecuteScalarAsync();
+        return result is DBNull ? null : result;
+    }
+
+    /// <summary>Dòng kho phụ tối thiểu: id là id bình luận/bài viết, crawler_ids có một phần tử.</summary>
+    public static Task SeedQueueAsync(string id, string reason, string content, string recordType = "comment",
+        bool existsInMain = false) =>
+        ExecuteParamAsync("""
+            INSERT INTO review_queue (id, record_type, reason, record_id, post_id, post_url, content,
+                f0, f1, f2, f3, reply_level, toxic_score, review_status, review_status_vi, analysis_data,
+                occurrences, first_seen, last_seen, exists_in_main, crawler_ids)
+            VALUES (@id, @type, @reason, @id, 'post_q', 'https://example.test/q', @content,
+                @content, '', '', '', 0, 0.5, 'clean', 'Trong sạch', '{}'::jsonb,
+                1, '2026-10-01', '2026-10-01', @inMain, ARRAY[@crawler]::text[])
+            """,
+            ("id", id), ("type", recordType), ("reason", reason), ("content", content),
+            ("inMain", existsInMain), ("crawler", "cr_" + id));
 
     public static async Task<int> CountAsync(string sql)
     {

@@ -32,6 +32,22 @@ public class Comment
     public DateTimeOffset? ExcludedAt { get; set; }
 
     public string? ScrapedAt { get; set; }
+
+    // null = dữ liệu chính; khác null = nạp từ hàng chờ lọc trùng, giá trị là lý do bị cách ly
+    public string? Source { get; set; }
+
+    // Các trường chỉ dùng khi xuất file (giữ nguyên NULL như bên crawler)
+    public bool IsReply { get; set; }
+    public string? ReviewStatus { get; set; }
+    public string? ReviewStatusVi { get; set; }
+    public string? UserReview { get; set; }
+    public string? UserReviewVi { get; set; }
+    public string? UserKeywords { get; set; }   // chuỗi JSON gốc
+    public long? SourceRowid { get; set; }      // rowid bên SQLite: thứ tự cây hội thoại
+
+    // Người xử lý gần nhất (duyệt, loại, khôi phục, hoàn tác)
+    public string? ReviewedBy { get; set; }
+    public DateTimeOffset? ReviewedAt { get; set; }
 }
 
 // Cột JSONB: dữ liệu phi quan hệ từ bộ phát hiện tự động

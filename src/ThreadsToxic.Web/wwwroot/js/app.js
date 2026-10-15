@@ -1,6 +1,15 @@
 // Giao diện lọc cộng tác: danh sách dùng chung, cập nhật thời gian thực qua SignalR.
 (() => {
   const PAGE_SIZE = 50;
+
+  // Lý do bị cách ly ở hàng chờ lọc trùng (cột source); null = dữ liệu chính
+  const SOURCE_LABELS = {
+    duplicate_content: "Trùng nội dung",
+    duplicate_id: "Trùng id",
+    non_vietnamese: "Không phải tiếng Việt",
+    meta_ai: "Meta AI",
+  };
+  const sourceLabel = (source) => SOURCE_LABELS[source] || source;
   const NAME_KEY = "threads-toxic-name";
   const HEARTBEAT_MS = 20000;
 
@@ -26,7 +35,7 @@
 
   // ---------- Tiện ích ----------
   // Mọi dữ liệu từ server/người dùng chèn vào HTML phải đi qua esc(); URL phải qua safeUrl().
-  const { esc, safeUrl, toInt } = window.ThreadsUtil;
+  const { esc, safeUrl, toInt, createPageCache } = window.ThreadsUtil;
 
   const debounce = (fn, ms) => {
     let timer = null;
@@ -115,7 +124,10 @@
   // ---------- Tải dữ liệu ----------
   function currentParams() {
     const params = new URLSearchParams({ bucket: state.bucket, page: state.page, pageSize: PAGE_SIZE });
-    const map = { keyword: "#keyword", word: "#word", minScore: "#minScore", replyLevel: "#replyLevel" };
+    const map = {
+      keyword: "#keyword", word: "#word", minScore: "#minScore", replyLevel: "#replyLevel", source: "#source",
+      review: "#review", reviewedBy: "#reviewedBy",
+    };
     for (const [key, sel] of Object.entries(map)) {
       const value = $(sel).value.trim();
       if (value) params.set(key, value);
@@ -141,11 +153,35 @@
     if (row) window.scrollBy(0, row.getBoundingClientRect().top - anchor.top);
   }
 
+  // Mỗi lần tải được đánh số; phản hồi về muộn của lần tải cũ (vd. trước khi đổi bộ lọc,
+  // hoặc do đồng đội vừa chuyển bình luận) bị bỏ qua để không đè lên kết quả mới hơn.
+  let reloadSeq = 0;
+
+  // Trang kế tiếp được tải trước ở nền nên bấm "Sau →" hiện ngay, không chờ một lượt đi về server.
+  const pageCache = createPageCache();
+  const fetchPage = (query) => api(`/api/items?${query}`);
+
+  function prefetchNextPage() {
+    if (state.page >= Math.ceil(state.total / PAGE_SIZE)) return;
+    const next = currentParams();
+    next.set("page", String(state.page + 1));
+    pageCache.prefetch(next.toString(), fetchPage);
+  }
+
+  // Danh sách cũ vẫn hiện (mờ đi) trong lúc tải; chỉ làm mờ khi chờ quá 150 ms để không nháy.
+  function setLoading(on) {
+    $("#list").classList.toggle("is-loading", on);
+    $("#list").setAttribute("aria-busy", String(on));
+  }
+
   async function reload() {
+    const seq = ++reloadSeq;
+    const loadingTimer = setTimeout(() => { if (seq === reloadSeq) setLoading(true); }, 150);
     try {
-      const list = await api(`/api/items?${currentParams()}`);
+      const list = await pageCache.get(currentParams().toString(), fetchPage);
       // Phản hồi mới đã kèm counts; gọi /counts chỉ để tương thích với server cũ.
       const counts = list.counts ?? await api("/api/items/counts");
+      if (seq !== reloadSeq) return;
 
       const anchor = captureViewAnchor();
       const detailScroll = $("#detail").scrollTop;
@@ -167,12 +203,23 @@
 
       restoreViewAnchor(anchor);
       $("#detail").scrollTop = detailScroll;
+      prefetchNextPage();
     } catch (err) {
+      if (seq !== reloadSeq) return;
       toast(`Không tải được dữ liệu: ${err.message}`);
+    } finally {
+      clearTimeout(loadingTimer);
+      if (seq === reloadSeq) setLoading(false);
     }
   }
 
-  const scheduleReload = debounce(reload, 150);
+  const debouncedReload = debounce(reload, 150);
+
+  // Dữ liệu vừa đổi (thao tác của mình hoặc đồng đội): bỏ các trang tải trước rồi tải lại.
+  function scheduleReload() {
+    pageCache.clear();
+    debouncedReload();
+  }
 
   // ---------- Hiển thị ----------
   function renderCounts() {
@@ -193,6 +240,7 @@
     const words = (item.matchedWords || []).slice(0, 6)
       .map((w) => `<span class="tag">${esc(w)}</span>`).join("");
     const lock = lockedByOther ? `<span class="lock">🔒 ${esc(holder)} đang xem</span>` : "";
+    const badge = reviewBadge(item);
 
     return `
       <article class="${classes.join(" ")}" data-id="${esc(item.id)}">
@@ -201,13 +249,22 @@
           <div class="meta">
             <span class="score ${scoreClass(item.toxicScore)}">${Math.round(item.toxicScore * 100)}%</span>
             <span class="level">F${toInt(item.replyLevel)}</span>
+            ${item.source ? `<span class="source" title="Nạp từ hàng chờ lọc trùng">Lọc trùng · ${esc(sourceLabel(item.source))}</span>` : ""}
             <span>@${esc(item.authorUsername || "ẩn danh")}</span>
+            ${badge}
             ${lock}
           </div>
           <p class="content">${esc(item.content)}</p>
           ${words ? `<div class="tags">${words}</div>` : ""}
         </div>
       </article>`;
+  }
+
+  // Người xử lý gần nhất (duyệt, loại, khôi phục); chỉ hiện nếu đã có người xử lý
+  function reviewBadge(item) {
+    if (!item.reviewedBy) return "";
+    const when = item.reviewedAt ? ` · ${formatDate(item.reviewedAt)}` : "";
+    return `<span class="reviewed" title="Người xử lý gần nhất${esc(when)}">✓ ${esc(item.reviewedBy)}</span>`;
   }
 
   function renderList() {
@@ -252,6 +309,8 @@
     const categories = (item.categories || []).join(", ") || "—";
     const words = (item.matchedWords || []).join(", ") || "—";
     const moveLabel = item.isExcluded ? "Khôi phục" : "Loại khỏi danh sách";
+    const approveBtn = item.isExcluded ? "" :
+      `<button class="btn" type="button" data-role="approve-focus">Giữ lại ✓ (A)</button>`;
     // Chỉ http(s): chặn javascript:, data:... có thể nằm trong dữ liệu cào về.
     const href = safeUrl(item.commentUrl) || safeUrl(item.postUrl);
     const link = href
@@ -267,12 +326,15 @@
         <dt>Điểm</dt><dd>${Math.round(item.toxicScore * 100)}% · ${esc(item.severity || "—")}</dd>
         <dt>Phân loại</dt><dd>${esc(categories)}</dd>
         <dt>Từ khớp</dt><dd>${esc(words)}</dd>
+        <dt>Nguồn</dt><dd>${item.source ? `Lọc trùng · ${esc(sourceLabel(item.source))}` : "Dữ liệu chính"}</dd>
         ${item.isExcluded ? `<dt>Đã loại bởi</dt><dd>${esc(item.excludedBy || "—")}</dd>` : ""}
+        <dt>Xử lý gần nhất</dt><dd>${item.reviewedBy ? `${esc(item.reviewedBy)} · ${esc(formatDate(item.reviewedAt))}` : "Chưa ai xử lý"}</dd>
         <dt>Liên kết</dt><dd>${link}</dd>
       </dl>
       ${lockedByOther ? `<p class="lock">🔒 ${esc(holder)} đang xem bình luận này</p>` : ""}
       <div class="actions">
         <button class="btn primary" type="button" data-role="move-focus" ${lockedByOther ? "disabled" : ""}>${moveLabel} (X)</button>
+        ${approveBtn}
       </div>`;
   }
 
@@ -388,6 +450,27 @@
     scheduleReload();
   }
 
+  // Giữ lại: đánh dấu đã duyệt, bình luận vẫn ở "Đang lọc" (không khóa, không thể hoàn tác bằng nút này)
+  async function approveItems(ids) {
+    if (!ids.length) return;
+    try {
+      const result = await postWithSession("/api/items/approve", { ids });
+      toast(`Đã giữ lại ${result.approved} bình luận.${result.skipped ? ` ${result.skipped} bình luận đã được loại nên bỏ qua.` : ""}`);
+      for (const id of ids) state.selected.delete(id);
+    } catch (err) {
+      toast(`Không giữ lại được: ${err.message}`);
+    }
+    refreshProgress();
+    scheduleReload();
+  }
+
+  function approveSelectionOrFocus() {
+    const ids = state.selected.size
+      ? [...state.selected]
+      : (state.focusId ? [state.focusId] : []);
+    approveItems(ids);
+  }
+
   function moveSelectionOrFocus() {
     const toExcluded = state.bucket === "active";
     const ids = state.selected.size
@@ -413,7 +496,19 @@
         state.counts = counts;
         renderCounts();
       }
+      refreshProgress();
       scheduleReload();
+    });
+
+    hub.on("ItemsReviewed", ({ by, ids }) => {
+      if (by !== state.me.name) toast(`${by} đã giữ lại ${ids.length} bình luận.`);
+      refreshProgress();
+      scheduleReload();
+    });
+
+    hub.on("QueueChanged", () => {
+      refreshQueueCount();
+      scheduleReload();     // bản ghi vừa đưa vào CSDL chính hiện ngay trong "Đang lọc"
     });
 
     hub.on("LockChanged", (itemId, holder) => {
@@ -460,6 +555,26 @@
     setStatus("Đã kết nối", "online");
   }
 
+  // ---------- Tiến độ & Kho phụ ----------
+  async function refreshProgress() {
+    try {
+      const p = await api("/api/items/progress");
+      const today = p.todayByReviewer.map((r) => `${esc(r.name)} ${r.count}`).join(" · ") || "chưa có";
+      const top = p.byReviewer.slice(0, 5).map((r) => `${esc(r.name)} ${r.count}`).join(" · ") || "chưa có";
+      $("#progress").innerHTML =
+        `Đã xử lý <b>${p.reviewed.toLocaleString("vi-VN")}</b>/${(p.active + p.excluded).toLocaleString("vi-VN")}` +
+        ` · hôm nay: ${today}` +
+        ` · tổng: ${top}`;
+    } catch { /* không có tiến độ thì bỏ qua, không chặn thao tác */ }
+  }
+
+  async function refreshQueueCount() {
+    try {
+      const counts = await api("/api/review/counts");
+      $("#queueCount").textContent = counts.pending.toLocaleString("vi-VN");
+    } catch { /* bỏ qua */ }
+  }
+
   // ---------- Khởi tạo ----------
   function bindUi() {
     document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
@@ -475,6 +590,10 @@
     $("#word").addEventListener("input", debounce(onFilterChange, 300));
     $("#minScore").addEventListener("change", onFilterChange);
     $("#replyLevel").addEventListener("change", onFilterChange);
+    $("#source").addEventListener("change", onFilterChange);
+    $("#review").addEventListener("change", onFilterChange);
+    $("#reviewedBy").addEventListener("input", debounce(onFilterChange, 300));
+    $("#approveBtn").addEventListener("click", approveSelectionOrFocus);
     $("#filters").addEventListener("submit", (e) => e.preventDefault());
 
     $("#prev").addEventListener("click", () => { state.page--; reload(); });
@@ -506,6 +625,9 @@
         const item = state.items.find((i) => i.id === state.focusId);
         if (item) moveItems([item.id], !item.isExcluded);
       }
+      if (e.target.matches('[data-role="approve-focus"]') && state.focusId) {
+        approveItems([state.focusId]);
+      }
     });
 
     document.addEventListener("keydown", (e) => {
@@ -519,6 +641,9 @@
           break;
         case "x":
           if (state.focusId || state.selected.size) moveSelectionOrFocus();
+          break;
+        case "a":
+          if (state.bucket === "active" && (state.focusId || state.selected.size)) approveSelectionOrFocus();
           break;
       }
     });
@@ -546,15 +671,23 @@
     storage.set(name);
     state.me = { name };
 
+    // Đọc dữ liệu không cần SignalR: tải song song với lúc kết nối để danh sách hiện sớm nhất
+    reload();
+    refreshProgress();
+    refreshQueueCount();
+
     connectHub();
     try {
       await hub.start();
       await joinRoom();
+      // Bình luận đã bấm xem trước khi kết nối xong: giữ khóa ngay để đồng đội thấy
+      if (state.focusId) setFocus(state.focusId);
+      // Thao tác của đồng đội trong lúc đang kết nối chưa có sự kiện: tải lại một lần cho chắc
+      scheduleReload();
     } catch (err) {
       setStatus("Không kết nối được máy chủ", "offline");
       toast(`Lỗi kết nối: ${err.message}`);
     }
-    reload();
   }
 
   start();

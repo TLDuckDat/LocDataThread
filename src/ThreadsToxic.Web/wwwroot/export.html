@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Xuất Excel & CSV</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Lọc cộng tác <span>Threads</span></div>
+    <nav class="topnav"><a class="btn ghost" href="./">← Về trang lọc</a></nav>
+  </header>
+
+  <main class="page">
+    <section class="panel">
+      <h1 class="page-title">📥 Xuất Dữ Liệu Bình Luận Excel &amp; CSV (Đã Fix Kích Thước Ô)</h1>
+      <p class="muted">Hỗ trợ xuất bảng 4 cốt lõi: <b>Nội dung</b>, <b>Điểm đánh giá</b>, <b>Bài viết gốc</b>, <b>Chủ đề bài viết</b>
+        đã được <b>căn chỉnh cố định độ rộng ô và tự động xuống dòng (Wrap Text)</b> để bạn tự đánh giá.</p>
+      <p class="note info">💡 <b>Mẹo:</b> Chỉ bình luận trong mục <b>Đang lọc</b> được xuất ra file. Hãy chuyển các comment rác, spam
+        hoặc không liên quan sang <b>Đã loại</b> ở <a href="./">trang lọc</a> trước khi xuất file.</p>
+
+      <form id="exportForm" class="export-options" autocomplete="off">
+        <fieldset class="radio-group">
+          <legend>Chọn nhóm dữ liệu bình luận cần xuất:</legend>
+          <label><input type="radio" name="status" value="all" checked> 📋 TOÀN BỘ BÌNH LUẬN (Đã gắn nhãn Xấu / Chưa rõ / Sạch để tự tổng hợp)</label>
+          <label><input type="radio" name="status" value="bad"> 🔴 Chỉ bình luận ĐÁNH GIÁ LÀ XẤU LUÔN (Độc hại rõ ràng)</label>
+          <label><input type="radio" name="status" value="ambiguous"> 🟡 Chỉ bình luận CHƯA RÕ (Nghi ngờ / Cần duyệt lại)</label>
+          <label><input type="radio" name="status" value="clean"> 🟢 Chỉ bình luận TRONG SẠCH</label>
+        </fieldset>
+
+        <fieldset class="radio-group">
+          <legend>Phân loại cấu trúc bình luận:</legend>
+          <label><input type="radio" name="type" value="all" checked> 💬 Cả gốc &amp; con (Toàn bộ)</label>
+          <label><input type="radio" name="type" value="root"> 🗨️ Chỉ bình luận gốc</label>
+          <label><input type="radio" name="type" value="reply"> ↳ Chỉ bình luận con (Phản hồi)</label>
+        </fieldset>
+
+        <div class="length-row">
+          <label>📏 Độ dài tối thiểu (Ký tự):
+            <input id="minLength" type="number" min="0" max="500" step="1" value="2"
+                   title="Bỏ qua các bình luận quá ngắn (như ừ, ờ, icon lẻ hoặc dấu chấm). Mặc định: 2 ký tự.">
+          </label>
+          <label>📏 Độ dài tối đa (Ký tự):
+            <input id="maxLength" type="number" min="10" max="10000" step="10" value="300"
+                   title="Bỏ qua các bình luận spam hoặc quá dài vượt ngưỡng. Mặc định: 300 ký tự.">
+          </label>
+          <label class="check" title="Loại bỏ các bình luận có nội dung giống hệt nhau khi xuất file Excel/CSV, chỉ giữ lại 1 bản ghi tốt nhất.">
+            <input id="dedup" type="checkbox" checked> 🛡️ Khử trùng lặp nội dung khi xuất
+          </label>
+          <label class="check" title="Chỉ bình luận đã có người xử lý (giữ lại, loại, khôi phục) ở trang lọc.">
+            <input id="reviewed" type="checkbox"> ✓ Chỉ bình luận đã có người xử lý
+          </label>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2 class="section-title">👁️ Xem trước bảng 4 cột cốt lõi &amp; Tùy chọn Ẩn/Hiện cột</h2>
+      <p id="previewLoading" class="muted">Đang tải dữ liệu xem trước…</p>
+      <p id="previewEmpty" class="note warn" hidden>Hiện tại chưa có bình luận nào thuộc nhóm này trong CSDL.</p>
+
+      <div id="previewBody" hidden>
+        <details class="columns-box" open>
+          <summary>🛠️ TÙY CHỌN ẨN / HIỆN CỘT (Cột bị ẩn trên giao diện sẽ KHÔNG xuất hiện trong file Excel/CSV)</summary>
+          <p><b>Bỏ chọn cột nào thì file Excel / CSV tải về sẽ tự động LOẠI BỎ cột đó:</b></p>
+          <div class="presets">
+            <button type="button" class="btn" data-preset="all">📋 Chọn tất cả</button>
+            <button type="button" class="btn" data-preset="tree" title="Bài viết, f0, f1, f2, f3, Nội dung, Điểm đánh giá, Chủ đề bài viết">🌳 Bài viết ➔ F0-F3 ➔ Cmt</button>
+            <button type="button" class="btn" data-preset="core" title="Bài viết, Nội dung, Điểm đánh giá, Chủ đề bài viết">🎯 4 cốt lõi (Bài viết ➔ Cmt)</button>
+            <button type="button" class="btn" data-preset="review">🏷️ Đầy đủ + Tự đánh giá</button>
+          </div>
+          <label class="field-label" for="addColumn">Chọn danh sách cột cần xuất ra file:</label>
+          <div class="multiselect">
+            <div id="chosenColumns" class="chips"></div>
+            <select id="addColumn" aria-label="Thêm cột"></select>
+          </div>
+        </details>
+
+        <p id="noColumnsWarning" class="note warn" hidden>⚠️ Bạn đã ẩn toàn bộ các cột! Vui lòng chọn ít nhất 1 cột bên trên.</p>
+        <p id="previewInfo" class="note info"></p>
+        <div class="table-wrap"><table id="previewTable" class="preview-table"></table></div>
+
+        <hr class="divider">
+        <div class="downloads">
+          <div class="download-box">
+            <button id="makeXlsx" type="button" class="btn primary wide">⚙️ TẠO FILE EXCEL</button>
+            <a id="getXlsx" class="btn download wide" hidden></a>
+            <p id="xlsxCaption" class="caption" hidden></p>
+          </div>
+          <div class="download-box">
+            <button id="makeCsv" type="button" class="btn wide">⚙️ TẠO FILE CSV</button>
+            <a id="getCsv" class="btn download wide" hidden></a>
+            <p id="csvCaption" class="caption" hidden>Chuẩn mã UTF-8-BOM: mở bằng Excel không lỗi font.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="js/util.js"></script>
+  <script src="js/export.js"></script>
+</body>
+</html>

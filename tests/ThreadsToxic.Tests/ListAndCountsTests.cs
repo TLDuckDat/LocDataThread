@@ -1,3 +1,4 @@
+using System.Net;
 using ThreadsToxic.Tests.Infrastructure;
 
 namespace ThreadsToxic.Tests;
@@ -140,5 +141,51 @@ public class ListAndCountsTests(AppFactory factory) : IntegrationTestBase(factor
         Assert.Equal(200, huge.PageSize);
         Assert.Equal(200, huge.Items.Count);
         Assert.Equal(1, zero.Page);
+    }
+
+    [Fact]
+    public async Task Source_filter_separates_main_data_from_review_queue()
+    {
+        await TestDb.SeedAsync(
+            new SeedRow("main1"),
+            new SeedRow("dup1", Source: "duplicate_content"),
+            new SeedRow("nonvi1", Source: "non_vietnamese"),
+            new SeedRow("nonvi2", Source: "non_vietnamese", Excluded: true));
+
+        var all = await ListAsync();
+        var main = await ListAsync("?source=main");
+        var review = await ListAsync("?source=review");
+        var nonVi = await ListAsync("?source=non_vietnamese");
+        var nonViExcluded = await ListAsync("?bucket=excluded&source=non_vietnamese");
+
+        Assert.Equal(3, all.Total);
+        Assert.Equal(["main1"], main.Items.Select(i => i.Id));
+        Assert.Null(main.Items[0].Source);
+        Assert.Equal(["dup1", "nonvi1"], review.Items.Select(i => i.Id).Order());
+        Assert.Equal(["nonvi1"], nonVi.Items.Select(i => i.Id));
+        Assert.Equal("non_vietnamese", nonVi.Items[0].Source);
+        Assert.Equal(["nonvi2"], nonViExcluded.Items.Select(i => i.Id));
+    }
+
+    [Fact]
+    public async Task Unknown_source_returns_empty_and_counts_still_cover_everything()
+    {
+        await TestDb.SeedAsync(new SeedRow("main1"), new SeedRow("dup1", Source: "duplicate_content"));
+
+        var result = await ListAsync("?source=khong_ton_tai");
+
+        Assert.Equal(0, result.Total);
+        Assert.Equal(2, result.Counts!.Active);
+    }
+
+    [Fact]
+    public async Task Items_from_review_queue_can_be_moved_like_any_other()
+    {
+        await TestDb.SeedAsync(new SeedRow("dup1", Source: "duplicate_content"));
+        var (status, moved) = await MoveAsync(["dup1"], toExcluded: true, "An");
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        Assert.Equal(1, moved!.Moved);
+        Assert.True(await TestDb.IsExcludedAsync("dup1"));
     }
 }

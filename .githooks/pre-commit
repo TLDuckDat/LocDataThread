@@ -1,0 +1,36 @@
+#!/bin/sh
+# Chặn commit lộ bí mật: file .env, bản dump dữ liệu, khóa Supabase, mật khẩu trong chuỗi kết nối.
+# Bật một lần sau khi clone:  git config core.hooksPath .githooks
+# Chắc chắn là báo nhầm thì bỏ qua bằng:  git commit --no-verify
+
+fail=0
+
+# 1. Tên file không bao giờ được commit
+bad_files=$(git diff --cached --name-only --diff-filter=ACMR |
+    grep -E '(^|/)\.env($|\.)|(^|/)backups/|\.(dump|pem|key|pfx|p12)$' |
+    grep -v -E '(^|/)\.env\.example$')
+if [ -n "$bad_files" ]; then
+    echo "pre-commit: KHÔNG commit file bí mật / dữ liệu:" >&2
+    echo "$bad_files" | sed 's/^/  /' >&2
+    fail=1
+fi
+
+# 2. Nội dung trông như bí mật (chỉ xét dòng được thêm; bỏ qua chính thư mục hook vì chứa các mẫu này)
+added=$(git diff --cached -U0 --diff-filter=ACMR -- . ':(exclude).githooks' | grep -E '^\+[^+]')
+hits=$(printf '%s\n' "$added" | grep -n -E \
+    -e 'sb_(secret|publishable)_[A-Za-z0-9_-]{10,}' \
+    -e 'eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}' \
+    -e 'SUPABASE_DB_PASSWORD=[^[:space:]]+' \
+    -e 'postgres(ql)?://[^:/@[:space:]]+:[^@/[:space:]]+@' \
+    -e '[Pp]assword=[^;"'"'"'[:space:]]+' |
+    grep -v -E '[Pp]assword=(postgres|x|\.\.\.|<)|\[YOUR-PASSWORD\]|password=env\[')
+if [ -n "$hits" ]; then
+    echo "pre-commit: nội dung giống khóa hoặc mật khẩu:" >&2
+    printf '%s\n' "$hits" | cut -c1-160 | sed 's/^/  /' >&2
+    fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+    echo "pre-commit: đã chặn commit. Đưa bí mật vào .env (đã gitignore) hoặc biến môi trường." >&2
+    exit 1
+fi

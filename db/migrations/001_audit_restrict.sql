@@ -2,7 +2,7 @@
 -- Lý do: nhật ký kiểm duyệt không được biến mất âm thầm khi ai đó xóa bình luận.
 -- Idempotent: chạy lại nhiều lần an toàn (không làm gì nếu FK đã là RESTRICT).
 --
--- Chạy: psql -h localhost -U postgres -d <tên_database> -v ON_ERROR_STOP=1 -f db/migrations/001_audit_restrict.sql
+-- Chạy: powershell -ExecutionPolicy Bypass -File tools/supabase_psql.ps1 -v ON_ERROR_STOP=1 -f db/migrations/001_audit_restrict.sql
 
 DO $$
 DECLARE

@@ -1,7 +1,7 @@
 // Chạy: node --test tests/js/util.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { esc, safeUrl, toInt } = require("../../src/ThreadsToxic.Web/wwwroot/js/util.js");
+const { esc, safeUrl, toInt, createPageCache } = require("../../src/ThreadsToxic.Web/wwwroot/js/util.js");
 
 test("esc neutralises markup in text content", () => {
   assert.equal(esc("<img src=x onerror=alert(1)>"), "&lt;img src=x onerror=alert(1)&gt;");
@@ -63,4 +63,58 @@ test("toInt coerces untrusted numbers", () => {
   assert.equal(toInt(-3), 0);
   assert.equal(toInt(2.9), 2);
   assert.equal(toInt(undefined, 1), 1);
+});
+
+// ---------- createPageCache ----------
+const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
+
+test("createPageCache reuses a prefetched page, even while it is still loading", async () => {
+  const cache = createPageCache();
+  const pending = deferred();
+  let calls = 0;
+  cache.prefetch("page=2", () => { calls++; return pending.promise; });
+
+  const got = cache.get("page=2", () => { calls++; return Promise.resolve("fresh"); });
+  pending.resolve("prefetched");
+  assert.equal(await got, "prefetched");
+  assert.equal(calls, 1);
+});
+
+test("createPageCache uses each prefetched page only once", async () => {
+  const cache = createPageCache();
+  cache.prefetch("page=2", () => Promise.resolve("prefetched"));
+  await cache.get("page=2", () => Promise.resolve("fresh"));
+  assert.equal(await cache.get("page=2", () => Promise.resolve("fresh")), "fresh");
+});
+
+test("createPageCache ignores stale or cleared entries", async () => {
+  let clock = 0;
+  const cache = createPageCache(1000, () => clock);
+  cache.prefetch("page=2", () => Promise.resolve("old"));
+  clock = 1001;
+  assert.equal(await cache.get("page=2", () => Promise.resolve("fresh")), "fresh");
+
+  cache.prefetch("page=3", () => Promise.resolve("old"));
+  cache.clear();     // dữ liệu vừa đổi
+  assert.equal(cache.size, 0);
+  assert.equal(await cache.get("page=3", () => Promise.resolve("fresh")), "fresh");
+});
+
+test("createPageCache falls back to a fresh load when the prefetch failed", async () => {
+  const cache = createPageCache();
+  cache.prefetch("page=2", () => Promise.reject(new Error("offline")));
+  assert.equal(await cache.get("page=2", () => Promise.resolve("fresh")), "fresh");
+});
+
+test("createPageCache does not prefetch a page that is already fresh", () => {
+  const cache = createPageCache();
+  let calls = 0;
+  const load = () => { calls++; return Promise.resolve("x"); };
+  cache.prefetch("page=2", load);
+  cache.prefetch("page=2", load);
+  assert.equal(calls, 1);
 });
