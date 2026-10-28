@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using ThreadsToxic.Web.Data;
+using ThreadsToxic.Web.Services;
 using ThreadsToxic.Web.Services.Export;
 
 namespace ThreadsToxic.Web.Endpoints;
@@ -29,7 +30,7 @@ public static class ExportEndpoints
 
     public static void MapExportEndpoints(this WebApplication app)
     {
-        var group = app.MapGroup("/api/export/curated");
+        var group = app.MapGroup("/api/export/curated").RequireUser();
         group.MapGet("/", PreviewAsync);
         group.MapGet("/xlsx", XlsxAsync);
         group.MapGet("/csv", CsvAsync);
@@ -41,35 +42,45 @@ public static class ExportEndpoints
         if (Validate(q) is { } error) return Results.BadRequest(error);
         var options = ToOptions(q);
         var sources = await LoadAsync(dbf, options, PreviewLimit, q.Reviewed == true, ct);
-        var rows = CuratedExport.Build(sources, options, limited: true);
-        return Results.Ok(new { columns = CuratedExport.Columns, rows, previewLimit = PreviewLimit });
+        var stats = new CuratedExportStats();
+        var rows = CuratedExport.Build(sources, options, limited: true, stats);
+        return Results.Ok(new
+        {
+            columns = CuratedExport.Columns, rows, previewLimit = PreviewLimit,
+            brokenChainDropped = stats.BrokenChainDropped,
+        });
     }
 
+    // Số dòng bị bỏ vì chuỗi ngữ cảnh đứt, trả kèm file tải về
+    public const string BrokenChainHeader = "X-Broken-Chain-Dropped";
+
     private static async Task<IResult> XlsxAsync(
-        [AsParameters] ExportQuery q, IDbContextFactory<AppDbContext> dbf, CancellationToken ct)
+        [AsParameters] ExportQuery q, IDbContextFactory<AppDbContext> dbf, HttpResponse response, CancellationToken ct)
     {
         if (Validate(q) is { } error) return Results.BadRequest(error);
-        var (options, columns, rows) = await BuildAllAsync(q, dbf, ct);
+        var (options, columns, rows) = await BuildAllAsync(q, dbf, response, ct);
         return Results.File(CuratedFiles.WriteXlsx(columns, rows), CuratedFiles.XlsxContentType,
             CuratedFiles.FileName(options.Status, "xlsx", DateTime.Now));
     }
 
     private static async Task<IResult> CsvAsync(
-        [AsParameters] ExportQuery q, IDbContextFactory<AppDbContext> dbf, CancellationToken ct)
+        [AsParameters] ExportQuery q, IDbContextFactory<AppDbContext> dbf, HttpResponse response, CancellationToken ct)
     {
         if (Validate(q) is { } error) return Results.BadRequest(error);
-        var (options, columns, rows) = await BuildAllAsync(q, dbf, ct);
+        var (options, columns, rows) = await BuildAllAsync(q, dbf, response, ct);
         return Results.File(CuratedFiles.WriteCsv(columns, rows), CuratedFiles.CsvContentType,
             CuratedFiles.FileName(options.Status, "csv", DateTime.Now));
     }
 
     private static async Task<(CuratedExportOptions, IReadOnlyList<string>, List<string[]>)> BuildAllAsync(
-        ExportQuery q, IDbContextFactory<AppDbContext> dbf, CancellationToken ct)
+        ExportQuery q, IDbContextFactory<AppDbContext> dbf, HttpResponse response, CancellationToken ct)
     {
         var options = ToOptions(q);
         var sources = await LoadAsync(dbf, options, limit: null, q.Reviewed == true, ct);
         var columns = CuratedExport.ResolveColumns(q.Columns);
-        var rows = CuratedExport.Project(CuratedExport.Build(sources, options), columns);
+        var stats = new CuratedExportStats();
+        var rows = CuratedExport.Project(CuratedExport.Build(sources, options, stats: stats), columns);
+        response.Headers[BrokenChainHeader] = stats.BrokenChainDropped.ToString();
         return (options, columns, rows);
     }
 
@@ -156,8 +167,15 @@ public static class ExportEndpoints
     private static IQueryable<Comment> Filter(AppDbContext db, CuratedExportOptions options, bool reviewedOnly)
     {
         var comments = db.Comments.AsNoTracking().Where(c => !c.IsExcluded);
+        // Chỉ bình luận đã xử lý: bản trả lời cần cả chuỗi cha (tối đa 3 cấp) cũng đã có người xử lý,
+        // để ngữ cảnh trong file đều đã được xem
         if (reviewedOnly)
-            comments = comments.Where(c => c.ReviewedBy != null);
+        {
+            comments = comments.Where(c => c.ReviewedBy != null
+                && (c.ThreadParentId == null || db.Comments.Any(p => p.Id == c.ThreadParentId && p.ReviewedBy != null
+                    && (p.ThreadParentId == null || db.Comments.Any(g => g.Id == p.ThreadParentId && g.ReviewedBy != null
+                        && (g.ThreadParentId == null || db.Comments.Any(r => r.Id == g.ThreadParentId && r.ReviewedBy != null)))))));
+        }
 
         comments = options.Status switch
         {

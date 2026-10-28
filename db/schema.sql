@@ -45,7 +45,14 @@ CREATE TABLE IF NOT EXISTS comments (
 
     -- Người xử lý gần nhất (duyệt, loại, khôi phục, hoàn tác); xem db/migrations/004_review_queue.sql
     reviewed_by         VARCHAR(60),
-    reviewed_at         TIMESTAMPTZ
+    reviewed_at         TIMESTAMPTZ,
+
+    -- Luồng hội thoại: cha trực tiếp và bình luận gốc F0; ràng buộc + trigger trong db/migrations/007_thread_links.sql
+    thread_parent_id    VARCHAR(100),
+    thread_root_id      VARCHAR(100),
+
+    -- Người phụ trách (chia việc); xem db/migrations/008_assignment.sql
+    assigned_to         VARCHAR(60)
 );
 
 -- Bài viết gốc (nội dung + chủ đề) cho file xuất
@@ -62,8 +69,9 @@ CREATE TABLE IF NOT EXISTS moderation_audits (
     id          BIGSERIAL PRIMARY KEY,
     comment_id  VARCHAR(100) NOT NULL REFERENCES comments(id) ON DELETE RESTRICT,
     user_name   VARCHAR(60) NOT NULL,
-    action      VARCHAR(30) NOT NULL,              -- 'exclude' | 'restore'
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    action      VARCHAR(30) NOT NULL,              -- 'exclude' | 'restore' | 'approve' | 'promote' | 'exclude_cascade' | 'force_*'
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    cause_id    VARCHAR(100)                       -- exclude_cascade: bình luận cha gây ra thao tác lan
 );
 
 -- Lọc nhanh theo bucket + điểm

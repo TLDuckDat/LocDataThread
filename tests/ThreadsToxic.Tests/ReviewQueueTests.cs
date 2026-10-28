@@ -234,10 +234,16 @@ public class ReviewQueueTests(AppFactory factory) : IntegrationTestBase(factory)
     [Fact]
     public async Task Chain_constraint_accepts_complete_thread()
     {
-        await TestDb.ExecuteParamAsync(
-            "INSERT INTO comments (id, post_id, post_url, content, reply_level, f0, f1, f2, f3) " +
-            "VALUES ('ok3', 'p', 'u', 'phản hồi cấp 3', 3, 'gốc', 'cha 1', 'cha 2', 'phản hồi cấp 3')");
-        Assert.Equal(1, await TestDb.CountAsync("SELECT COUNT(*) FROM comments WHERE id = 'ok3'"));
+        // Từ migration 007, bản trả lời phải có bình luận cha thật trong cùng bài viết
+        const string insert = "INSERT INTO comments (id, post_id, post_url, content, reply_level, f0, f1, f2, f3) VALUES ";
+        await TestDb.ExecuteParamAsync(insert + "('ok0', 'p', 'u', 'gốc', 0, 'gốc', '', '', '')");
+        await TestDb.ExecuteParamAsync(insert + "('ok1', 'p', 'u', 'cha 1', 1, 'gốc', 'cha 1', '', '')");
+        await TestDb.ExecuteParamAsync(insert + "('ok2', 'p', 'u', 'cha 2', 2, 'gốc', 'cha 1', 'cha 2', '')");
+        await TestDb.ExecuteParamAsync(insert +
+            "('ok3', 'p', 'u', 'phản hồi cấp 3', 3, 'gốc', 'cha 1', 'cha 2', 'phản hồi cấp 3')");
+
+        Assert.Equal("ok2", await TestDb.QueryScalarAsync("SELECT thread_parent_id FROM comments WHERE id = 'ok3'"));
+        Assert.Equal("ok0", await TestDb.QueryScalarAsync("SELECT thread_root_id FROM comments WHERE id = 'ok3'"));
     }
 
     [Fact]

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using ThreadsToxic.Web.Services;
 
 namespace ThreadsToxic.Tests.Infrastructure;
 
@@ -17,6 +18,12 @@ public class AppFactory : WebApplicationFactory<Program>
     /// <summary>Mọi dòng log (mọi mức) mà app đã ghi, để kiểm tra không lộ bí mật.</summary>
     public CapturingLoggerProvider Logs { get; } = new();
 
+    // Tài khoản test: Minh là admin, còn lại là member. Mã truy cập của mỗi người là TokenFor(tên).
+    public const string AdminName = "Minh";
+    public static readonly string[] MemberNames = ["Lan", "Huy", "An", "Late", "Thu"];
+
+    public static string TokenFor(string name) => $"test-access-token-{name}";
+
     public AppFactory() : this(null, null)
     {
     }
@@ -29,6 +36,14 @@ public class AppFactory : WebApplicationFactory<Program>
         _settings = new Dictionary<string, string?>();
         if (leaseSeconds is { } lease) _settings["Collab:LeaseSeconds"] = lease.ToString();
         if (sweepSeconds is { } sweep) _settings["Collab:SweepSeconds"] = sweep.ToString();
+
+        var users = new[] { (AdminName, Roles.Admin) }.Concat(MemberNames.Select(n => (n, Roles.Member))).ToArray();
+        for (var i = 0; i < users.Length; i++)
+        {
+            _settings[$"Auth:Users:{i}:Name"] = users[i].Item1;
+            _settings[$"Auth:Users:{i}:Role"] = users[i].Item2;
+            _settings[$"Auth:Users:{i}:TokenSha256"] = AccessTokens.Hash(TokenFor(users[i].Item1));
+        }
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)

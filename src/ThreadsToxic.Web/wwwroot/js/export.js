@@ -65,19 +65,27 @@
     return query(true).toString();
   }
 
+  // Mọi API cần mã truy cập; mã sai hoặc đã bị đổi thì nhập lại
+  async function authFetch(url) {
+    const res = await fetch(url, { headers: ThreadsAuth.headers() });
+    if (res.status === 401) ThreadsAuth.signOut();
+    return res;
+  }
+
   async function loadPreview() {
     const id = ++state.requestId;
     $("previewLoading").hidden = false;
     renderDownloads();     // file đã tạo theo bộ lọc cũ không còn đúng: ẩn ngay
 
     try {
-      const res = await fetch(`/api/export/curated?${query(false)}`);
+      const res = await authFetch(`/api/export/curated?${query(false)}`);
       if (!res.ok) throw new Error(await res.text() || res.statusText);
       const data = await res.json();
       if (id !== state.requestId) return;
       state.allColumns = data.columns;
       state.rows = data.rows;
       state.previewLimit = data.previewLimit;
+      state.brokenChainDropped = data.brokenChainDropped || 0;
       // Mặc định: đúng 6 cột (Bài viết, f0–f3, Nội dung); bỏ chọn/chọn lại tự do sau đó
       if (state.chosen === null) state.chosen = PRESETS.six.filter((c) => data.columns.includes(c));
       render();
@@ -99,7 +107,10 @@
     $("noColumnsWarning").hidden = state.chosen.length > 0;
     $("previewInfo").innerHTML =
       `Đang xem trước tối đa <b>${state.previewLimit} dòng</b> trong mẫu (${state.rows.length} dòng). ` +
-      `File xuất sẽ gồm toàn bộ dữ liệu phù hợp, với <b>${columns.length}</b> cột đã chọn.`;
+      `File xuất sẽ gồm toàn bộ dữ liệu phù hợp, với <b>${columns.length}</b> cột đã chọn.` +
+      (state.brokenChainDropped
+        ? ` Đã bỏ <b>${state.brokenChainDropped}</b> dòng trong mẫu vì chuỗi ngữ cảnh F đứt (ô F cấp trên rỗng sau khi làm sạch).`
+        : "");
     renderTable(columns);
     renderDownloads();
   }
@@ -157,7 +168,7 @@
     tick();
     const timer = setInterval(tick, 1000);
     try {
-      const res = await fetch(`/api/export/curated/${kind}?${query(true)}`);
+      const res = await authFetch(`/api/export/curated/${kind}?${query(true)}`);
       if (!res.ok) throw new Error(await res.text() || res.statusText);
       const blob = await readWithProgress(res, (percent) => {
         phase = `Đang tải ${what} về ${percent}%`;
@@ -166,6 +177,8 @@
       const old = state.files[kind];
       if (old) URL.revokeObjectURL(old.url);
       state.files[kind] = { signature: sig, url: URL.createObjectURL(blob), name: fileName(res, kind) };
+      const dropped = Number(res.headers.get("X-Broken-Chain-Dropped") || 0);
+      if (dropped) toast(`Đã bỏ ${dropped} dòng vì chuỗi ngữ cảnh F đứt.`);
       renderDownloads();
     } catch (err) {
       toast(`Không thể tạo ${what}: ${err.message}`);
@@ -244,5 +257,5 @@
   $("makeXlsx").addEventListener("click", () => makeFile("xlsx"));
   $("makeCsv").addEventListener("click", () => makeFile("csv"));
 
-  loadPreview();
+  ThreadsAuth.ensure().then(loadPreview);
 })();

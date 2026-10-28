@@ -8,8 +8,11 @@ public record ListResult(int Total, int Page, int PageSize, List<ItemView> Items
 public record ItemView(string Id, string Content, int ReplyLevel, float ToxicScore, bool IsExcluded, string? ExcludedBy,
     string? Source = null);
 public record CountsResult(int Active, int Excluded);
-public record MoveResult(int Moved, int Skipped, List<string>? Locked = null, List<string>? MovedIds = null);
-public record UndoResult(int Undone, List<string> UndoneIds, List<string> Conflicts, int Skipped, List<string> Locked);
+public record MoveResult(int Moved, int Skipped, List<string>? Locked = null, List<string>? MovedIds = null,
+    List<string>? Cascaded = null, List<string>? RestoredAncestors = null, List<string>? Blocked = null,
+    List<string>? BlockingAncestors = null);
+public record UndoResult(int Undone, List<string> UndoneIds, List<string> Conflicts, int Skipped, List<string> Locked,
+    List<string>? Cascaded = null);
 
 /// <summary>
 /// Mỗi test bắt đầu và kết thúc với database test trống.
@@ -28,6 +31,8 @@ public abstract class IntegrationTestBase<TFactory> : IClassFixture<TFactory>, I
     {
         Factory = factory;
         Http = factory.CreateClient();
+        // API chỉ đọc cần mã truy cập; API ghi còn cần token phiên riêng (xem MoveAsync)
+        Http.DefaultRequestHeaders.Add("X-Access-Token", AppFactory.TokenFor("Lan"));
     }
 
     public virtual Task InitializeAsync() => TestDb.ResetAsync();
@@ -58,10 +63,10 @@ public abstract class IntegrationTestBase<TFactory> : IClassFixture<TFactory>, I
 
     /// <summary>Gọi move với tư cách <paramref name="userName"/> (tự Join để lấy token phiên).</summary>
     protected async Task<(HttpStatusCode Status, MoveResult? Result)> MoveAsync(
-        IEnumerable<string> ids, bool toExcluded, string userName, bool force = false)
+        IEnumerable<string> ids, bool toExcluded, string userName, bool force = false, bool withAncestors = false)
     {
         var actor = await ActorAsync(userName);
-        return await MoveWithTokenAsync(actor.Token, new { ids = ids.ToArray(), toExcluded, force });
+        return await MoveWithTokenAsync(actor.Token, new { ids = ids.ToArray(), toExcluded, force, withAncestors });
     }
 
     /// <summary>Hoàn tác với tư cách <paramref name="userName"/>; toExcluded = trạng thái muốn đưa về.</summary>

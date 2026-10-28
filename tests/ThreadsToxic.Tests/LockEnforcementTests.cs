@@ -66,29 +66,44 @@ public class LockEnforcementTests(AppFactory factory) : IntegrationTestBase(fact
     [Fact]
     public async Task Force_overrides_the_lock_and_marks_the_audit_row()
     {
+        // "Vẫn chuyển" chỉ dành cho admin (Minh); Huy là member đang xem
         await TestDb.SeedAsync(new SeedRow("held"), new SeedRow("free"));
-        var minh = await ActorAsync("Minh");
-        await minh.FocusAsync("held");
+        var huy = await ActorAsync("Huy");
+        await huy.FocusAsync("held");
 
-        var (_, result) = await MoveAsync(["held", "free"], toExcluded: true, "Huy", force: true);
+        var (_, result) = await MoveAsync(["held", "free"], toExcluded: true, "Minh", force: true);
 
         Assert.Equal(2, result!.Moved);
         Assert.Empty(result.Locked!);
         var audits = await TestDb.AuditsAsync();
-        Assert.Contains(("held", "Huy", "force_exclude"), audits);
-        Assert.Contains(("free", "Huy", "exclude"), audits);   // chỉ dòng thực sự bị vượt khóa mới đánh dấu force
+        Assert.Contains(("held", "Minh", "force_exclude"), audits);
+        Assert.Contains(("free", "Minh", "exclude"), audits);   // chỉ dòng thực sự bị vượt khóa mới đánh dấu force
+    }
+
+    [Fact]
+    public async Task Force_by_a_member_is_forbidden_and_changes_nothing()
+    {
+        await TestDb.SeedAsync(new SeedRow("held"));
+        var minh = await ActorAsync("Minh");
+        await minh.FocusAsync("held");
+
+        var (status, _) = await MoveAsync(["held"], toExcluded: true, "Huy", force: true);
+
+        Assert.Equal(HttpStatusCode.Forbidden, status);
+        Assert.False(await TestDb.IsExcludedAsync("held"));
+        Assert.Empty(await TestDb.AuditsAsync());
     }
 
     [Fact]
     public async Task Force_restore_is_marked_in_the_audit()
     {
         await TestDb.SeedAsync(new SeedRow("t_001", Excluded: true));
-        var minh = await ActorAsync("Minh");
-        await minh.FocusAsync("t_001");
+        var huy = await ActorAsync("Huy");
+        await huy.FocusAsync("t_001");
 
-        await MoveAsync(["t_001"], toExcluded: false, "Huy", force: true);
+        await MoveAsync(["t_001"], toExcluded: false, "Minh", force: true);
 
-        Assert.Contains(("t_001", "Huy", "force_restore"), await TestDb.AuditsAsync());
+        Assert.Contains(("t_001", "Minh", "force_restore"), await TestDb.AuditsAsync());
     }
 
     [Fact]
@@ -107,11 +122,11 @@ public class LockEnforcementTests(AppFactory factory) : IntegrationTestBase(fact
     {
         // Sau khi bị vượt khóa, bình luận đã đổi nên lease được giải phóng cho cả phòng.
         await TestDb.SeedAsync(new SeedRow("t_001"));
-        var minh = await ActorAsync("Minh");
+        var huy = await ActorAsync("Huy");
         await using var lan = await HubTestClient.ConnectAsync(Factory, "Lan");
-        await minh.FocusAsync("t_001");
+        await huy.FocusAsync("t_001");
 
-        await MoveAsync(["t_001"], toExcluded: true, "Huy", force: true);
+        await MoveAsync(["t_001"], toExcluded: true, "Minh", force: true);
 
         await Wait.UntilAsync(() => lan.LockChanges.Contains(("t_001", null)),
             "lease bị giải phóng sau khi bình luận bị chuyển cưỡng chế");

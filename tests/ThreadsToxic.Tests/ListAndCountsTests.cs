@@ -58,7 +58,8 @@ public class ListAndCountsTests(AppFactory factory) : IntegrationTestBase(factor
     public async Task ReplyLevel_filters_exact_level()
     {
         await TestDb.SeedAsync(
-            new SeedRow("f0", ReplyLevel: 0), new SeedRow("f1", ReplyLevel: 1), new SeedRow("f2", ReplyLevel: 2));
+            new SeedRow("f0", ReplyLevel: 0), new SeedRow("f1", ReplyLevel: 1, Parent: "f0"),
+            new SeedRow("f2", ReplyLevel: 2, Parent: "f1"));
 
         var result = await ListAsync("?replyLevel=1");
 
@@ -106,9 +107,9 @@ public class ListAndCountsTests(AppFactory factory) : IntegrationTestBase(factor
     public async Task Filters_combine_with_and()
     {
         await TestDb.SeedAsync(
-            new SeedRow("both", Score: 0.9f, ReplyLevel: 1, Words: ["vcl"]),
             new SeedRow("wrong-level", Score: 0.9f, ReplyLevel: 0, Words: ["vcl"]),
-            new SeedRow("low", Score: 0.1f, ReplyLevel: 1, Words: ["vcl"]));
+            new SeedRow("both", Score: 0.9f, ReplyLevel: 1, Words: ["vcl"], Parent: "wrong-level"),
+            new SeedRow("low", Score: 0.1f, ReplyLevel: 1, Words: ["vcl"], Parent: "wrong-level"));
 
         var result = await ListAsync("?minScore=0.5&replyLevel=1&word=vcl");
 

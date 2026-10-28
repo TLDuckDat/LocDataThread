@@ -6,19 +6,20 @@ namespace ThreadsToxic.Web.Hubs;
 public record FocusResult(bool Granted, string? Holder);
 
 // Token phiên do server cấp; client gửi lại trong header X-Session-Token khi gọi API ghi.
-public record JoinResult(string Token);
+// Name/Role lấy từ mã truy cập (cấu hình Auth:Users), không do client tự khai.
+public record JoinResult(string Token, string Name, string Role);
 
-public class CollabHub(CollabState state) : Hub
+public class CollabHub(CollabState state, AccessTokens accessTokens) : Hub
 {
     public const string Room = "filter-room";
 
-    public async Task<JoinResult> Join(string name)
+    // accessToken: mã truy cập vĩnh viễn của người dùng. Sai mã thì không vào được phòng.
+    public async Task<JoinResult> Join(string accessToken)
     {
-        name = (name ?? "").Trim();
-        if (name.Length is 0 or > 40)
-            throw new HubException("Tên phải từ 1 đến 40 ký tự.");
+        var user = accessTokens.Resolve(accessToken)
+            ?? throw new HubException("Mã truy cập không đúng.");
 
-        state.SetUser(Context.ConnectionId, name);
+        state.SetUser(Context.ConnectionId, user);
         var token = state.IssueToken(Context.ConnectionId);
         await Groups.AddToGroupAsync(Context.ConnectionId, Room);
         await BroadcastPresence();
@@ -28,7 +29,7 @@ public class CollabHub(CollabState state) : Hub
             .Select(l => new { itemId = l.ItemId, holder = l.Holder });
         await Clients.Caller.SendAsync("LockSnapshot", leases);
 
-        return new JoinResult(token);
+        return new JoinResult(token, user.Name, user.Role);
     }
 
     // Giữ bình luận đang xem (lease 45 giây). Người khác sẽ thấy ổ khóa kèm tên.

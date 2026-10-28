@@ -10,7 +10,7 @@ public class CollabState(IOptions<CollabOptions> options)
     private readonly TimeSpan _leaseDuration = options.Value.Lease;
 
     private readonly object _gate = new();
-    private readonly Dictionary<string, string> _usersByConnection = new();
+    private readonly Dictionary<string, AppUser> _usersByConnection = new();
     private readonly Dictionary<string, Lease> _leasesByItem = new();
     private readonly Dictionary<string, string> _connectionByToken = new();
     private readonly Dictionary<string, string> _tokenByConnection = new();
@@ -19,12 +19,15 @@ public class CollabState(IOptions<CollabOptions> options)
 
     public record Presence(string Name, string? FocusedItemId);
 
-    // Danh tính do server gán cho một kết nối đã Join
-    public record Session(string ConnectionId, string UserName);
-
-    public void SetUser(string connectionId, string name)
+    // Danh tính do server gán cho một kết nối đã Join (tên và vai trò lấy từ mã truy cập)
+    public record Session(string ConnectionId, string UserName, string Role)
     {
-        lock (_gate) _usersByConnection[connectionId] = name;
+        public bool IsAdmin => Role == Roles.Admin;
+    }
+
+    public void SetUser(string connectionId, AppUser user)
+    {
+        lock (_gate) _usersByConnection[connectionId] = user;
     }
 
     // Cấp token phiên cho kết nối. Token cũ của cùng kết nối (nếu có) mất hiệu lực.
@@ -51,9 +54,9 @@ public class CollabState(IOptions<CollabOptions> options)
         lock (_gate)
         {
             if (_connectionByToken.TryGetValue(token, out var connectionId)
-                && _usersByConnection.TryGetValue(connectionId, out var name))
+                && _usersByConnection.TryGetValue(connectionId, out var user))
             {
-                return new Session(connectionId, name);
+                return new Session(connectionId, user.Name, user.Role);
             }
             return null;
         }
@@ -64,8 +67,9 @@ public class CollabState(IOptions<CollabOptions> options)
     {
         lock (_gate)
         {
-            if (!_usersByConnection.TryGetValue(connectionId, out var name))
+            if (!_usersByConnection.TryGetValue(connectionId, out var user))
                 return (false, null);
+            var name = user.Name;
 
             if (_leasesByItem.TryGetValue(itemId, out var current)
                 && current.ExpiresAt > now
@@ -152,6 +156,7 @@ public class CollabState(IOptions<CollabOptions> options)
         lock (_gate)
         {
             return _usersByConnection.Values
+                .Select(u => u.Name)
                 .Distinct()
                 .OrderBy(n => n, StringComparer.CurrentCultureIgnoreCase)
                 .Select(name =>

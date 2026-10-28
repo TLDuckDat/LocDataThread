@@ -16,9 +16,10 @@ public class CollabHubTests(AppFactory factory) : IntegrationTestBase(factory)
     }
 
     [Fact]
-    public async Task Join_rejects_an_empty_name()
+    public async Task Join_rejects_an_unknown_access_token()
     {
-        await using var client = await HubTestClient.ConnectAsync(Factory, "   ", join: false);
+        // "Ghost" không có trong Auth:Users nên mã truy cập của Ghost không hợp lệ
+        await using var client = await HubTestClient.ConnectAsync(Factory, "Ghost", join: false);
 
         await Assert.ThrowsAnyAsync<Exception>(() => client.JoinAsync());
     }

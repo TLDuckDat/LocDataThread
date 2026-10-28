@@ -37,8 +37,9 @@ public record ReasonCount(string RecordType, string Reason, int Count);
 
 public record ReviewCounts(int Pending, int PendingInMain, int Promoted, int Rejected, List<ReasonCount> Reasons);
 
+// BlockedChain: bản trả lời chưa đưa được vì bình luận cha không có trong CSDL chính hoặc đã bị loại (vẫn chờ duyệt)
 public record ReviewActionResult(int Promoted, int PromotedComments, int PromotedPosts, int Rejected,
-    int Restored, int SkippedInMain, List<string> Changed);
+    int Restored, int SkippedInMain, List<string> Changed, List<string>? BlockedChain = null);
 
 /// <summary>
 /// Kho phụ: bản ghi từ threads_review.db chờ người dùng quyết định.
@@ -55,7 +56,7 @@ public static class ReviewEndpoints
 
     public static void MapReviewEndpoints(this WebApplication app)
     {
-        var group = app.MapGroup("/api/review");
+        var group = app.MapGroup("/api/review").RequireUser();
         group.MapGet("/", ListAsync);
         group.MapGet("/counts", CountsAsync);
         group.MapPost("/promote", PromoteAsync);
@@ -232,7 +233,7 @@ public static class ReviewEndpoints
 
     // Hàng loạt: áp dụng cho mọi bản ghi khớp bộ lọc đang xem. Số lượng phải khớp với số người dùng đã thấy,
     // nếu không (dữ liệu đã đổi) thì từ chối để không làm trên một tập khác với tập họ đã xem.
-    private static async Task<Results<Ok<ReviewActionResult>, BadRequest<string>, UnauthorizedHttpResult, Conflict<object>>> BulkAsync(
+    private static async Task<Results<Ok<ReviewActionResult>, BadRequest<string>, UnauthorizedHttpResult, Conflict<object>, JsonHttpResult<string>>> BulkAsync(
         ReviewBulkRequest req,
         [FromHeader(Name = ItemEndpoints.SessionHeader)] string? sessionToken,
         AppDbContext db,
@@ -242,6 +243,8 @@ public static class ReviewEndpoints
     {
         var session = state.ResolveSession(sessionToken);
         if (session is null) return TypedResults.Unauthorized();
+        // Hàng loạt (tới 20 000 bản ghi) chỉ dành cho admin
+        if (!session.IsAdmin) return AuthFilters.AdminOnly();
 
         var action = (req.Action ?? "").Trim().ToLowerInvariant();
         if (action is not ("promote" or "reject"))
@@ -282,9 +285,28 @@ public static class ReviewEndpoints
             FOR UPDATE
             """).ToListAsync(ct);
 
-        var insertedComments = eligible.Count == 0
-            ? new List<string>()
-            : await db.Database.SqlQuery<string>($"""
+        // Bản trả lời chỉ được đưa vào khi bình luận cha đã có trong CSDL chính và đang lọc (chuỗi F phải liền mạch,
+        // xem migration 007). Đưa theo từng cấp để cha được đưa cùng lượt nằm trước con.
+        var eligibleArray = eligible.ToArray();
+        var insertedComments = new List<string>();
+        var blockedChain = new List<string>();
+        for (var level = 0; level <= 3 && eligibleArray.Length > 0; level++)
+        {
+            if (level > 0)
+            {
+                blockedChain.AddRange(await db.Database.SqlQuery<string>($"""
+                    SELECT q.id FROM review_queue q
+                    WHERE q.id = ANY({eligibleArray}) AND q.record_type = 'comment' AND q.reply_level = {level}
+                      AND NOT EXISTS (SELECT 1 FROM comments x WHERE x.id = q.id)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM comments p
+                          WHERE p.id = find_thread_parent(q.post_id, q.reply_level, q.f0, q.f1, q.f2)
+                            AND NOT p.is_excluded)
+                    """).ToListAsync(ct));
+            }
+
+            var blockedArray = blockedChain.ToArray();
+            insertedComments.AddRange(await db.Database.SqlQuery<string>($"""
                 INSERT INTO comments (
                     id, post_id, post_url, comment_url, author_username, author_name, content, posted_at,
                     likes, reply_level, parent_comment_id, f0, f1, f2, f3, toxic_score, severity,
@@ -295,10 +317,13 @@ public static class ReviewEndpoints
                     q.toxic_score, q.severity, q.analysis_data, q.first_seen, q.is_reply, q.review_status,
                     q.review_status_vi, '[]', q.reason, FALSE
                 FROM review_queue q
-                WHERE q.id = ANY({eligible}) AND q.record_type = 'comment'
+                WHERE q.id = ANY({eligibleArray}) AND q.record_type = 'comment' AND q.reply_level = {level}
+                  AND NOT (q.id = ANY({blockedArray}))
+                ORDER BY q.id
                 ON CONFLICT (id) DO NOTHING
                 RETURNING id
-                """).ToListAsync(ct);
+                """).ToListAsync(ct));
+        }
 
         var insertedPosts = eligible.Count == 0
             ? new List<string>()
@@ -314,7 +339,7 @@ public static class ReviewEndpoints
         var inserted = insertedComments.Concat(insertedPosts).ToArray();
 
         // Trùng id với dữ liệu chính (xuất hiện sau lần nạp): đánh dấu và không đưa
-        var conflicted = eligible.Except(inserted).ToArray();
+        var conflicted = eligible.Except(inserted).Except(blockedChain).ToArray();
         if (conflicted.Length > 0)
         {
             await db.Database.ExecuteSqlInterpolatedAsync($"""
@@ -346,7 +371,7 @@ public static class ReviewEndpoints
                 new { promoted = inserted.Length, by = userName }, ct);
 
         return new ReviewActionResult(inserted.Length, insertedComments.Count, insertedPosts.Count, 0, 0,
-            conflicted.Length, inserted.ToList());
+            conflicted.Length, inserted.ToList(), blockedChain);
     }
 
     private static async Task<ReviewActionResult> RejectCoreAsync(
@@ -369,7 +394,8 @@ public static class ReviewEndpoints
     private static ReviewActionResult Sum(ReviewActionResult a, ReviewActionResult b) => new(
         a.Promoted + b.Promoted, a.PromotedComments + b.PromotedComments, a.PromotedPosts + b.PromotedPosts,
         a.Rejected + b.Rejected, a.Restored + b.Restored, a.SkippedInMain + b.SkippedInMain,
-        a.Changed.Concat(b.Changed).ToList());
+        a.Changed.Concat(b.Changed).ToList(),
+        (a.BlockedChain ?? []).Concat(b.BlockedChain ?? []).ToList());
 
     private static string[] CleanIds(IEnumerable<string>? ids) =>
         (ids ?? []).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().ToArray();

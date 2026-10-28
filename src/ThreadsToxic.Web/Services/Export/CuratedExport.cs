@@ -11,6 +11,13 @@ public record CuratedExportOptions(
     int MaxLength = 300,
     bool Deduplicate = true);
 
+// Số liệu phụ của một lần dựng bảng (để trang xuất báo cho người dùng)
+public sealed class CuratedExportStats
+{
+    // Dòng bị bỏ vì chuỗi ngữ cảnh đứt: một ô F cấp trên rỗng sau khi làm sạch (vd ngữ cảnh không phải tiếng Việt)
+    public int BrokenChainDropped { get; set; }
+}
+
 // Một bình luận kèm bài viết gốc (LEFT JOIN: bài viết có thể không tồn tại)
 public record CuratedSource(
     string CommentId,
@@ -81,7 +88,8 @@ public static class CuratedExport
         NullStyle PostContent, NullStyle PostUrl, NullStyle PostCategories);
 
     /// <param name="limited">true khi đầu vào bị cắt bởi LIMIT (xem trước): khi đó không khử trùng thì giữ nguyên thứ tự.</param>
-    public static List<string[]> Build(IReadOnlyList<CuratedSource> sources, CuratedExportOptions options, bool limited = false)
+    public static List<string[]> Build(IReadOnlyList<CuratedSource> sources, CuratedExportOptions options, bool limited = false,
+        CuratedExportStats? stats = null)
     {
         if (sources.Count == 0) return [];
 
@@ -109,7 +117,13 @@ public static class CuratedExport
             return length >= options.MinLength && length <= options.MaxLength;
         });
 
-        var list = rows.ToList();
+        // Chuỗi ngữ cảnh phải liền mạch (khác crawler, có chủ đích): bản trả lời cấp L cần f0..f(L-1) còn nội dung
+        // sau khi làm sạch. Nếu không, file sẽ có dòng f3 có mà f1 trống, mất logic hội thoại.
+        var cache = new TextCache();
+        var filtered = rows.ToList();
+        var list = filtered.Where(r => HasIntactContext(r, cache)).ToList();
+        if (stats is not null) stats.BrokenChainDropped = filtered.Count - list.Count;
+
         if (options.Deduplicate)
         {
             // Ưu tiên bản đã được người dùng đánh giá, rồi điểm cao hơn; OrderBy của LINQ ổn định như sort của pandas
@@ -125,7 +139,6 @@ public static class CuratedExport
             list = SortByConversation(list);
         }
 
-        var cache = new TextCache();
         return list.Select(r => FormatRow(r, nulls, cache)).ToList();
     }
 
@@ -198,6 +211,17 @@ public static class CuratedExport
             _posts[text] = cleaned;
             return cleaned;
         }
+    }
+
+    private static bool HasIntactContext(CuratedSource r, TextCache cache)
+    {
+        var level = Math.Min(3, r.ReplyLevel != 0 ? r.ReplyLevel : r.IsReply ? 1 : 0);
+        string[] context = [r.F0, r.F1, r.F2];
+        for (var k = 0; k < level; k++)
+        {
+            if (cache.CleanField(context[k]).Length == 0) return false;
+        }
+        return true;
     }
 
     // F0 không bao giờ để trống: lấy nội dung bình luận nếu thiếu

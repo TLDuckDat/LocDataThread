@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.SignalR.Client;
 namespace ThreadsToxic.Tests.Infrastructure;
 
 public record FocusResult(bool Granted, string? Holder);
-public record JoinResult(string Token);
+public record JoinResult(string Token, string Name, string Role);
 public record MovedPayload(List<string> Ids, bool ToExcluded, string By, bool Undo = false, CountsResult? Counts = null);
 public record LockInfo(string ItemId, string Holder);
 public record PresenceInfo(string Name, string? FocusedItemId);
@@ -49,9 +49,10 @@ public sealed class HubTestClient : IAsyncDisposable
         return client;
     }
 
+    /// <summary>Vào phòng bằng mã truy cập của <see cref="Name"/> (xem AppFactory.TokenFor).</summary>
     public async Task<string> JoinAsync()
     {
-        var result = await Connection.InvokeAsync<JoinResult>("Join", Name);
+        var result = await Connection.InvokeAsync<JoinResult>("Join", AppFactory.TokenFor(Name));
         Token = result.Token;
         return result.Token;
     }

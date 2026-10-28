@@ -36,10 +36,15 @@ builder.Services.AddDbContextFactory<AppDbContext>(options =>
 
 builder.Services.AddSignalR();
 builder.Services.Configure<CollabOptions>(builder.Configuration.GetSection("Collab"));
+builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection("Auth"));
+builder.Services.AddSingleton<AccessTokens>();
 builder.Services.AddSingleton<CollabState>();
 builder.Services.AddHostedService<LeaseSweeper>();
 
 var app = builder.Build();
+
+// Kiểm tra cấu hình tài khoản ngay khi khởi động: thiếu hoặc sai thì dừng, không chạy app mở cho mọi người
+app.Services.GetRequiredService<AccessTokens>();
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
@@ -47,6 +52,7 @@ app.UseStaticFiles();
 app.MapItemEndpoints();
 app.MapExportEndpoints();
 app.MapReviewEndpoints();
+app.MapAssignEndpoints();
 app.MapHub<CollabHub>("/hubs/collab");
 
 app.Run();

@@ -10,7 +10,9 @@ public record SeedRow(
     float Score = 0.5f,
     string[]? Words = null,
     bool Excluded = false,
-    string? Source = null);
+    string? Source = null,
+    string? Parent = null,          // bắt buộc với bản trả lời (ReplyLevel > 0): chuỗi F được dựng từ cha
+    string PostId = "post_test");
 
 /// <summary>
 /// Truy cập trực tiếp database test để dựng và kiểm tra dữ liệu.
@@ -56,29 +58,63 @@ public static class TestDb
                 is_auto_toxic = false,
             });
 
+            var content = row.Content ?? $"Nội dung {row.Id}";
+            var chain = await ChainForAsync(connection, row, content);
+
             await using var cmd = new NpgsqlCommand("""
-                INSERT INTO comments (id, post_id, post_url, content, reply_level, toxic_score,
+                INSERT INTO comments (id, post_id, post_url, content, reply_level, is_reply, toxic_score,
                                       analysis_data, is_excluded, excluded_by, excluded_at, source,
                                       f0, f1, f2, f3)
-                VALUES (@id, 'post_test', 'https://example.test/post', @content, @level, @score,
+                VALUES (@id, @post, 'https://example.test/post', @content, @level, @level > 0, @score,
                         @analysis::jsonb, @excluded,
                         CASE WHEN @excluded THEN 'seed' END,
                         CASE WHEN @excluded THEN NOW() END, @source,
-                        @content,
-                        CASE WHEN @level >= 1 THEN @content ELSE '' END,
-                        CASE WHEN @level >= 2 THEN @content ELSE '' END,
-                        CASE WHEN @level >= 3 THEN @content ELSE '' END)
+                        @f0, @f1, @f2, @f3)
                 """, connection);
             cmd.Parameters.AddWithValue("id", row.Id);
-            cmd.Parameters.AddWithValue("content", row.Content ?? $"Nội dung {row.Id}");
+            cmd.Parameters.AddWithValue("post", row.PostId);
+            cmd.Parameters.AddWithValue("content", content);
             cmd.Parameters.AddWithValue("level", row.ReplyLevel);
             cmd.Parameters.AddWithValue("score", row.Score);
             cmd.Parameters.AddWithValue("analysis", analysis);
             cmd.Parameters.AddWithValue("excluded", row.Excluded);
             cmd.Parameters.AddWithValue("source", (object?)row.Source ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("f0", chain[0]);
+            cmd.Parameters.AddWithValue("f1", chain[1]);
+            cmd.Parameters.AddWithValue("f2", chain[2]);
+            cmd.Parameters.AddWithValue("f3", chain[3]);
             await cmd.ExecuteNonQueryAsync();
         }
     }
+
+    // Chuỗi F0..F3 hợp lệ: F_L = nội dung, các cấp trên lấy từ cha (cha phải được seed trước)
+    private static async Task<string[]> ChainForAsync(NpgsqlConnection connection, SeedRow row, string content)
+    {
+        var chain = new[] { "", "", "", "" };
+        if (row.ReplyLevel > 0)
+        {
+            if (row.Parent is null)
+                throw new InvalidOperationException($"Bản trả lời {row.Id} (F{row.ReplyLevel}) cần Parent.");
+            await using var cmd = new NpgsqlCommand(
+                "SELECT f0, f1, f2, content, reply_level FROM comments WHERE id = @id", connection);
+            cmd.Parameters.AddWithValue("id", row.Parent);
+            await using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync())
+                throw new InvalidOperationException($"Chưa seed cha {row.Parent} của {row.Id}.");
+            var parentLevel = reader.GetInt32(4);
+            for (var k = 0; k < parentLevel; k++) chain[k] = reader.GetString(k);
+            chain[parentLevel] = reader.GetString(3);
+        }
+        chain[row.ReplyLevel] = content;
+        return chain;
+    }
+
+    /// <summary>Luồng F0 -> F1 -> F2 -> F3 với id {prefix}0..{prefix}3 (con cấp L là con của cấp L-1).</summary>
+    public static Task SeedThreadAsync(string prefix, int depth = 3, string postId = "post_test") =>
+        SeedAsync(Enumerable.Range(0, depth + 1)
+            .Select(level => new SeedRow($"{prefix}{level}", $"Nội dung {prefix} cấp {level}", ReplyLevel: level,
+                Parent: level == 0 ? null : $"{prefix}{level - 1}", PostId: postId))
+            .ToArray());
 
     /// <summary>Sinh n bình luận có id duy nhất: t_001, t_002...</summary>
     public static SeedRow[] Rows(int count, Func<int, SeedRow>? customize = null) =>

@@ -19,7 +19,9 @@ public record ItemQuery(
     int? Page,
     int? PageSize,
     string? Review,      // "unreviewed" | "reviewed"; trống = tất cả
-    string? ReviewedBy); // lọc theo người xử lý gần nhất
+    string? ReviewedBy,  // lọc theo người xử lý gần nhất
+    string? Assigned,    // "me" (phần của người gọi) | "none" (chưa giao) | tên người; trống = tất cả
+    string? Order);      // "thread": theo bài viết rồi theo luồng F0 -> F3; trống = điểm giảm dần
 
 public record ItemDto(
     string Id,
@@ -43,13 +45,16 @@ public record ItemDto(
     DateTimeOffset? ExcludedAt,
     string? Source,
     string? ReviewedBy,
-    DateTimeOffset? ReviewedAt);
+    DateTimeOffset? ReviewedAt,
+    string? ThreadParentId,
+    string? AssignedTo);
 
 // Tên người thao tác lấy từ phiên phía server (header X-Session-Token), không nhận từ body.
 // Force = true: vượt qua khóa của người khác (được ghi audit với action có tiền tố "force_").
 public record BucketCounts(int Active, int Excluded);
 
-public record MoveRequest(List<string> Ids, bool ToExcluded, bool Force = false);
+// WithAncestors = true (khôi phục): khôi phục kèm cha/ông đang ở "Đã loại" thay vì bị chặn.
+public record MoveRequest(List<string> Ids, bool ToExcluded, bool Force = false, bool WithAncestors = false);
 
 // Hoàn tác: ToExcluded là trạng thái muốn đưa về (ngược với thao tác ban đầu).
 public record UndoRequest(List<string> Ids, bool ToExcluded);
@@ -70,7 +75,7 @@ public static class ItemEndpoints
 
     public static void MapItemEndpoints(this WebApplication app)
     {
-        var group = app.MapGroup("/api/items");
+        var group = app.MapGroup("/api/items").RequireUser();
         group.MapGet("/", ListAsync);
         group.MapGet("/counts", CountsAsync);
         group.MapPost("/move", MoveAsync);
@@ -80,21 +85,28 @@ public static class ItemEndpoints
     }
 
     private static async Task<IResult> ListAsync(
-        [AsParameters] ItemQuery q, IDbContextFactory<AppDbContext> dbf, CancellationToken ct)
+        [AsParameters] ItemQuery q, IDbContextFactory<AppDbContext> dbf, HttpContext http, CancellationToken ct)
     {
         var page = Math.Max(1, q.Page ?? 1);
         var pageSize = Math.Clamp(q.PageSize ?? 50, 10, 200);
+        var me = AuthFilters.CurrentUser(http)?.Name;
+
+        // Theo luồng: cùng bài, cùng gốc F0; trong luồng sắp theo (F1, F2, cấp) nên cha luôn đứng trước con
+        IQueryable<Comment> Ordered(IQueryable<Comment> query) =>
+            string.Equals(q.Order, "thread", StringComparison.OrdinalIgnoreCase)
+                ? query.OrderBy(c => c.PostId).ThenBy(c => c.ThreadRootId).ThenBy(c => c.F1).ThenBy(c => c.F2)
+                    .ThenBy(c => c.ReplyLevel).ThenBy(c => c.Id)
+                : query.OrderByDescending(c => c.ToxicScore).ThenBy(c => c.Id);
 
         // Ba truy vấn độc lập chạy song song, mỗi cái một kết nối
-        var totalTask = dbf.RunAsync(db => Filter(db, q).CountAsync(ct), ct);
-        var rowsTask = dbf.RunAsync(db => Filter(db, q)
-            .OrderByDescending(c => c.ToxicScore)
-            .ThenBy(c => c.Id)
+        var totalTask = dbf.RunAsync(db => Filter(db, q, me).CountAsync(ct), ct);
+        var rowsTask = dbf.RunAsync(db => Ordered(Filter(db, q, me))
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .Select(c => new { c.Id, c.Content, c.AuthorUsername, c.AuthorName, c.PostUrl, c.CommentUrl,
                 c.PostedAt, c.ReplyLevel, c.ToxicScore, c.Severity, c.F0, c.F1, c.F2, c.F3,
-                c.AnalysisData, c.IsExcluded, c.ExcludedBy, c.ExcludedAt, c.Source, c.ReviewedBy, c.ReviewedAt })
+                c.AnalysisData, c.IsExcluded, c.ExcludedBy, c.ExcludedAt, c.Source, c.ReviewedBy, c.ReviewedAt,
+                c.ThreadParentId, c.AssignedTo })
             .ToListAsync(ct), ct);
         var countsTask = dbf.RunAsync(db => GetCountsAsync(db, ct), ct);
         await Task.WhenAll(totalTask, rowsTask, countsTask);
@@ -104,12 +116,13 @@ public static class ItemEndpoints
             c.PostedAt, c.ReplyLevel, c.ToxicScore, c.Severity,
             c.F0, c.F1, c.F2, c.F3,
             c.AnalysisData.MatchedWords, c.AnalysisData.Categories,
-            c.IsExcluded, c.ExcludedBy, c.ExcludedAt, c.Source, c.ReviewedBy, c.ReviewedAt));
+            c.IsExcluded, c.ExcludedBy, c.ExcludedAt, c.Source, c.ReviewedBy, c.ReviewedAt, c.ThreadParentId, c.AssignedTo));
 
         return Results.Ok(new { total = totalTask.Result, page, pageSize, items, counts = countsTask.Result });
     }
 
-    private static IQueryable<Comment> Filter(AppDbContext db, ItemQuery q)
+    // me: tên người gọi (cho Assigned=me)
+    private static IQueryable<Comment> Filter(AppDbContext db, ItemQuery q, string? me)
     {
         var excluded = string.Equals(q.Bucket, "excluded", StringComparison.OrdinalIgnoreCase);
         var query = db.Comments.AsNoTracking().Where(c => c.IsExcluded == excluded);
@@ -146,6 +159,20 @@ public static class ItemEndpoints
             query = query.Where(c => c.ReviewedBy == reviewer);
         }
 
+        if (!string.IsNullOrWhiteSpace(q.Assigned))
+        {
+            var assigned = q.Assigned.Trim();
+            if (string.Equals(assigned, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                query = query.Where(c => c.AssignedTo == null);
+            }
+            else
+            {
+                var name = string.Equals(assigned, "me", StringComparison.OrdinalIgnoreCase) ? me : assigned;
+                query = query.Where(c => c.AssignedTo == name);
+            }
+        }
+
         if (!string.IsNullOrWhiteSpace(q.Source))
         {
             var source = q.Source.Trim();
@@ -175,7 +202,7 @@ public static class ItemEndpoints
             Excluded: counts.FirstOrDefault(x => x.Excluded)?.Count ?? 0);
     }
 
-    private static async Task<Results<Ok<object>, BadRequest<string>, UnauthorizedHttpResult>> MoveAsync(
+    private static async Task<Results<Ok<object>, BadRequest<string>, UnauthorizedHttpResult, Conflict<string>, JsonHttpResult<string>>> MoveAsync(
         MoveRequest req,
         [FromHeader(Name = SessionHeader)] string? sessionToken,
         AppDbContext db,
@@ -187,6 +214,9 @@ public static class ItemEndpoints
         if (session is null)
             return TypedResults.Unauthorized();
         var userName = session.UserName;
+        // "Vẫn chuyển" (vượt khóa của người khác) chỉ dành cho admin
+        if (req.Force && !session.IsAdmin)
+            return AuthFilters.AdminOnly();
 
         var ids = (req.Ids ?? new()).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().ToArray();
         if (ids.Length is 0)
@@ -194,76 +224,199 @@ public static class ItemEndpoints
         if (ids.Length > MaxMoveBatch)
             return TypedResults.BadRequest($"Mỗi lần chỉ thao tác tối đa {MaxMoveBatch} bình luận.");
 
-        // Bình luận đang bị NGƯỜI KHÁC giữ lease còn hạn thì bỏ qua (trừ khi Force).
-        // Kiểm tra khóa và UPDATE không nguyên tử: nếu có người Focus đúng lúc đó thì dòng vẫn đổi
-        // và biến mất khỏi màn hình họ; dữ liệu không mất vì khôi phục được.
-        var heldByOthers = state.GetLeases(DateTimeOffset.UtcNow)
+        // Bình luận đang bị NGƯỜI KHÁC giữ lease còn hạn thì bỏ qua (trừ khi Force), kể cả khi nó chỉ nằm
+        // trong nhánh bị kéo theo. Kiểm tra khóa và UPDATE không nguyên tử: nếu có người Focus đúng lúc đó
+        // thì dòng vẫn đổi và biến mất khỏi màn hình họ; dữ liệu không mất vì khôi phục được.
+        var heldByOthers = HeldByOthers(state, userName);
+
+        MoveOutcome outcome;
+        await using (var tx = await db.Database.BeginTransactionAsync(ct))
+        {
+            try
+            {
+                outcome = req.ToExcluded
+                    ? await ExcludeCoreAsync(db, ids, heldByOthers, req.Force, userName, ct)
+                    : await RestoreCoreAsync(db, ids, heldByOthers, req.Force, req.WithAncestors, userName, ct);
+                await tx.CommitAsync(ct);
+            }
+            catch (Exception ex) when (ThreadChain.IsChainViolation(ex))
+            {
+                return TypedResults.Conflict(ChainConflictMessage);
+            }
+        }
+
+        await BroadcastMovedAsync(db, hub, state, outcome.AllChanged, req.ToExcluded, userName, undo: false, ct);
+
+        return TypedResults.Ok<object>(new
+        {
+            moved = outcome.Changed.Count,
+            movedIds = outcome.AllChanged,          // đúng các id đã đổi thật (gồm nhánh kéo theo): dùng cho Hoàn tác
+            skipped = outcome.Skipped,
+            locked = outcome.Locked,
+            cascaded = outcome.Cascaded,            // con cháu bị loại theo
+            restoredAncestors = outcome.Ancestors,  // cha/ông được khôi phục kèm (WithAncestors)
+            blocked = outcome.Blocked,              // không khôi phục được vì cha/ông vẫn ở "Đã loại"
+            blockingAncestors = outcome.BlockingAncestors,
+        });
+    }
+
+    private const string ChainConflictMessage =
+        "Luồng hội thoại vừa bị người khác thay đổi (cha/con không còn khớp). Tải lại rồi thử lại.";
+
+    private static HashSet<string> HeldByOthers(CollabState state, string userName) =>
+        state.GetLeases(DateTimeOffset.UtcNow)
             .Where(lease => lease.Holder != userName)
             .Select(lease => lease.ItemId)
             .ToHashSet();
-        var lockedIds = req.Force ? [] : ids.Where(heldByOthers.Contains).ToArray();
-        var forcedIds = req.Force ? ids.Where(heldByOthers.Contains).ToArray() : [];
-        var targetIds = lockedIds.Length == 0 ? ids : ids.Except(lockedIds).ToArray();
 
-        if (targetIds.Length == 0)
-            return TypedResults.Ok<object>(new { moved = 0, skipped = 0, locked = lockedIds });
+    // Changed: bình luận được chọn đã đổi thật. AllChanged: thêm nhánh kéo theo
+    // (con cháu khi loại, tổ tiên khi khôi phục cả chuỗi).
+    private sealed record MoveOutcome(
+        List<string> Changed, List<string> AllChanged, List<string> Cascaded, List<string> Ancestors,
+        string[] Locked, int Skipped, string[] Blocked, string[] BlockingAncestors);
 
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
+    private static readonly MoveOutcome NoChange = new([], [], [], [], [], 0, [], []);
+
+    // Loại kèm toàn bộ con cháu đang lọc (cha bị loại thì con phải bị loại, xem migration 007).
+    // Con cháu ghi audit "exclude_cascade" với cause_id là bình luận được chọn.
+    private static async Task<MoveOutcome> ExcludeCoreAsync(
+        AppDbContext db, string[] ids, HashSet<string> heldByOthers, bool force, string userName, CancellationToken ct)
+    {
+        var descendants = await ThreadChain.DescendantsAsync(db, ids, ct);
+
+        // Không loại nửa vời: nếu một bình luận trong nhánh đang bị người khác xem thì cả nhánh bị bỏ qua
+        bool BranchHeld(string id) =>
+            heldByOthers.Contains(id)
+            || descendants.Any(d => d.Origin == id && !d.IsExcluded && heldByOthers.Contains(d.Id));
+        var lockedIds = force ? [] : ids.Where(BranchHeld).ToArray();
+        var targetIds = ids.Except(lockedIds).ToArray();
+        var forcedIds = force ? targetIds.Where(BranchHeld).ToArray() : [];
+        var cascade = descendants.Where(d => targetIds.Contains(d.Origin)).ToList();
+        var allIds = targetIds.Concat(cascade.Select(d => d.Id)).ToArray();
+
+        if (allIds.Length == 0)
+            return NoChange with { Locked = lockedIds };
+
+        await db.Database.SqlQuery<string>($"""
+            SELECT id FROM comments WHERE id = ANY({allIds}) ORDER BY id FOR UPDATE
+            """).ToListAsync(ct);
 
         // Cập nhật có điều kiện: chỉ dòng thực sự đổi bucket mới được trả về.
         // Hai người bấm cùng lúc sẽ không tạo ra thao tác trùng.
-        List<string> changed;
-        string action;
-        if (req.ToExcluded)
-        {
-            action = "exclude";
-            changed = await db.Database.SqlQuery<string>($"""
-                UPDATE comments
-                SET is_excluded = TRUE, excluded_by = {userName}, excluded_at = NOW(),
-                    reviewed_by = {userName}, reviewed_at = NOW()
-                WHERE id = ANY({targetIds}) AND is_excluded = FALSE
-                RETURNING id
-                """).ToListAsync(ct);
-        }
-        else
-        {
-            action = "restore";
-            changed = await db.Database.SqlQuery<string>($"""
-                UPDATE comments
-                SET is_excluded = FALSE, excluded_by = NULL, excluded_at = NULL,
-                    reviewed_by = {userName}, reviewed_at = NOW()
-                WHERE id = ANY({targetIds}) AND is_excluded = TRUE
-                RETURNING id
-                """).ToListAsync(ct);
-        }
+        var changedAll = await db.Database.SqlQuery<string>($"""
+            UPDATE comments
+            SET is_excluded = TRUE, excluded_by = {userName}, excluded_at = NOW(),
+                reviewed_by = CASE WHEN id = ANY({targetIds}) THEN {userName} ELSE reviewed_by END,
+                reviewed_at = CASE WHEN id = ANY({targetIds}) THEN NOW() ELSE reviewed_at END
+            WHERE id = ANY({allIds}) AND is_excluded = FALSE
+            RETURNING id
+            """).ToListAsync(ct);
+
+        var changedSet = changedAll.ToHashSet();
+        var changed = targetIds.Where(changedSet.Contains).ToList();
+        var cascaded = cascade.Where(d => changedSet.Contains(d.Id)).ToList();
 
         if (changed.Count > 0)
         {
             var changedArray = changed.ToArray();
-            var forceAction = "force_" + action;
             await db.Database.ExecuteSqlInterpolatedAsync($"""
                 INSERT INTO moderation_audits (comment_id, user_name, action)
-                SELECT x, {userName}, CASE WHEN x = ANY({forcedIds}) THEN {forceAction} ELSE {action} END
+                SELECT x, {userName}, CASE WHEN x = ANY({forcedIds}) THEN 'force_exclude' ELSE 'exclude' END
                 FROM unnest({changedArray}) AS x
                 """, ct);
         }
-
-        await tx.CommitAsync(ct);
-
-        await BroadcastMovedAsync(db, hub, state, changed, req.ToExcluded, userName, undo: false, ct);
-
-        return TypedResults.Ok<object>(new
+        if (cascaded.Count > 0)
         {
-            moved = changed.Count,
-            movedIds = changed,       // đúng các id đã đổi thật: dùng cho Hoàn tác
-            skipped = targetIds.Length - changed.Count,
-            locked = lockedIds,
-        });
+            var cascadedIds = cascaded.Select(d => d.Id).ToArray();
+            var origins = cascaded.Select(d => d.Origin).ToArray();
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO moderation_audits (comment_id, user_name, action, cause_id)
+                SELECT x.id, {userName}, 'exclude_cascade', x.origin
+                FROM unnest({cascadedIds}, {origins}) AS x(id, origin)
+                """, ct);
+        }
+
+        return new MoveOutcome(changed, changedAll, cascaded.Select(d => d.Id).ToList(), [],
+            lockedIds, targetIds.Length - changed.Count, [], []);
+    }
+
+    // Khôi phục. Bình luận có cha/ông vẫn ở "Đã loại" bị chặn (nằm trong Blocked), trừ khi
+    // withAncestors: khi đó tổ tiên đã loại được khôi phục kèm (audit "restore", cause_id = bình luận được chọn).
+    // Khôi phục không kéo theo con cháu: con bị loại vẫn ở "Đã loại" cho tới khi được chọn.
+    private static async Task<MoveOutcome> RestoreCoreAsync(
+        AppDbContext db, string[] ids, HashSet<string> heldByOthers, bool force, bool withAncestors,
+        string userName, CancellationToken ct)
+    {
+        var idSet = ids.ToHashSet();
+        var excludedAncestors = (await ThreadChain.AncestorsAsync(db, ids, ct))
+            .Where(a => a.IsExcluded && !idSet.Contains(a.Id))
+            .ToList();
+
+        string[] blocked = withAncestors
+            ? []
+            : ids.Where(id => excludedAncestors.Any(a => a.Origin == id)).ToArray();
+        var blocking = excludedAncestors.Where(a => blocked.Contains(a.Origin)).Select(a => a.Id).Distinct().ToArray();
+
+        var candidates = ids.Except(blocked).ToArray();
+        bool BranchHeld(string id) =>
+            heldByOthers.Contains(id)
+            || (withAncestors && excludedAncestors.Any(a => a.Origin == id && heldByOthers.Contains(a.Id)));
+        var lockedIds = force ? [] : candidates.Where(BranchHeld).ToArray();
+        var targetIds = candidates.Except(lockedIds).ToArray();
+        var forcedIds = force ? targetIds.Where(BranchHeld).ToArray() : [];
+        var pulled = withAncestors
+            ? excludedAncestors.Where(a => targetIds.Contains(a.Origin)).DistinctBy(a => a.Id).ToList()
+            : [];
+        var allIds = targetIds.Concat(pulled.Select(a => a.Id)).ToArray();
+
+        if (allIds.Length == 0)
+            return NoChange with { Locked = lockedIds, Blocked = blocked, BlockingAncestors = blocking };
+
+        await db.Database.SqlQuery<string>($"""
+            SELECT id FROM comments WHERE id = ANY({allIds}) ORDER BY id FOR UPDATE
+            """).ToListAsync(ct);
+
+        var changedAll = await db.Database.SqlQuery<string>($"""
+            UPDATE comments
+            SET is_excluded = FALSE, excluded_by = NULL, excluded_at = NULL,
+                reviewed_by = {userName}, reviewed_at = NOW()
+            WHERE id = ANY({allIds}) AND is_excluded = TRUE
+            RETURNING id
+            """).ToListAsync(ct);
+
+        var changedSet = changedAll.ToHashSet();
+        var changed = targetIds.Where(changedSet.Contains).ToList();
+        var ancestors = pulled.Where(a => changedSet.Contains(a.Id)).ToList();
+
+        if (changed.Count > 0)
+        {
+            var changedArray = changed.ToArray();
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO moderation_audits (comment_id, user_name, action)
+                SELECT x, {userName}, CASE WHEN x = ANY({forcedIds}) THEN 'force_restore' ELSE 'restore' END
+                FROM unnest({changedArray}) AS x
+                """, ct);
+        }
+        if (ancestors.Count > 0)
+        {
+            var ancestorIds = ancestors.Select(a => a.Id).ToArray();
+            var origins = ancestors.Select(a => a.Origin).ToArray();
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO moderation_audits (comment_id, user_name, action, cause_id)
+                SELECT x.id, {userName}, 'restore', x.origin
+                FROM unnest({ancestorIds}, {origins}) AS x(id, origin)
+                """, ct);
+        }
+
+        return new MoveOutcome(changed, changedAll, [], ancestors.Select(a => a.Id).ToList(),
+            lockedIds, targetIds.Length - changed.Count, blocked, blocking);
     }
 
     // Hoàn tác thao tác của CHÍNH MÌNH: chỉ áp dụng cho bình luận mà audit gần nhất vẫn là của người gọi.
     // Bình luận mà người khác đã thao tác sau đó được báo trong "conflicts" và không bị đổi.
-    private static async Task<Results<Ok<object>, BadRequest<string>, UnauthorizedHttpResult>> UndoAsync(
+    // Hoàn tác một lần loại cũng khôi phục đúng các con cháu đã bị loại theo lần đó (exclude_cascade của mình);
+    // hoàn tác một lần khôi phục thì loại lại (lan xuống con cháu), kèm tổ tiên đã được khôi phục cùng lần đó.
+    private static async Task<Results<Ok<object>, BadRequest<string>, UnauthorizedHttpResult, Conflict<string>>> UndoAsync(
         UndoRequest req,
         [FromHeader(Name = SessionHeader)] string? sessionToken,
         AppDbContext db,
@@ -283,10 +436,7 @@ public static class ItemEndpoints
             return TypedResults.BadRequest($"Mỗi lần chỉ thao tác tối đa {MaxMoveBatch} bình luận.");
 
         // Hoàn tác cũng tôn trọng khóa của người khác (giống move, không có force).
-        var heldByOthers = state.GetLeases(DateTimeOffset.UtcNow)
-            .Where(lease => lease.Holder != userName)
-            .Select(lease => lease.ItemId)
-            .ToHashSet();
+        var heldByOthers = HeldByOthers(state, userName);
         var lockedIds = ids.Where(heldByOthers.Contains).ToArray();
         var candidates = ids.Except(lockedIds).ToArray();
 
@@ -299,73 +449,145 @@ public static class ItemEndpoints
             });
         }
 
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        MoveOutcome outcome;
+        var conflicts = new List<string>();
+        await using (var tx = await db.Database.BeginTransactionAsync(ct))
+        {
+            try
+            {
+                // Khóa các dòng trước khi đọc audit để không ai chen vào giữa lúc kiểm tra và cập nhật.
+                await db.Database.SqlQuery<string>($"""
+                    SELECT id FROM comments WHERE id = ANY({candidates}) ORDER BY id FOR UPDATE
+                    """).ToListAsync(ct);
 
-        // Khóa các dòng trước khi đọc audit để không ai chen vào giữa lúc kiểm tra và cập nhật.
+                var eligible = (await LatestAuditsByAsync(db, candidates, userName, ct)).ToArray();
+                conflicts.AddRange(candidates.Except(eligible));
+
+                // Những dòng mình đã kéo theo trong thao tác gốc (audit gần nhất vẫn là của mình, cause_id thuộc eligible)
+                var dragged = (await DraggedByAsync(db, eligible, userName, ct))
+                    .Where(d => !eligible.Contains(d.Id))
+                    .ToList();
+
+                if (req.ToExcluded)
+                {
+                    var reExclude = eligible
+                        .Concat(dragged.Where(d => d.Action == "restore").Select(d => d.Id))
+                        .ToArray();
+                    outcome = await ExcludeCoreAsync(db, reExclude, heldByOthers, force: false, userName, ct);
+                }
+                else
+                {
+                    var restoreSet = eligible
+                        .Concat(dragged.Where(d => d.Action == "exclude_cascade").Select(d => d.Id))
+                        .ToHashSet();
+
+                    // Không để con đứng dưới cha đã loại: bỏ những dòng có cha vẫn bị loại và không cùng được khôi phục
+                    var parents = await ThreadChain.ParentsAsync(db, restoreSet.ToArray(), ct);
+                    bool removed;
+                    do
+                    {
+                        removed = false;
+                        foreach (var id in restoreSet.ToList())
+                        {
+                            if (parents.TryGetValue(id, out var p) && p.ParentExcluded && !restoreSet.Contains(p.ParentId))
+                            {
+                                restoreSet.Remove(id);
+                                removed = true;
+                            }
+                        }
+                    } while (removed);
+
+                    conflicts.AddRange(eligible.Where(id => !restoreSet.Contains(id)));
+                    outcome = restoreSet.Count == 0
+                        ? NoChange
+                        : await RestoreAllAsync(db, restoreSet.ToArray(), eligible, userName, ct);
+                }
+
+                await tx.CommitAsync(ct);
+            }
+            catch (Exception ex) when (ThreadChain.IsChainViolation(ex))
+            {
+                return TypedResults.Conflict(ChainConflictMessage);
+            }
+        }
+
+        await BroadcastMovedAsync(db, hub, state, outcome.AllChanged, req.ToExcluded, userName, undo: true, ct);
+
+        return TypedResults.Ok<object>(new
+        {
+            undone = outcome.Changed.Count,
+            undoneIds = outcome.AllChanged,
+            conflicts,
+            skipped = outcome.Skipped,
+            locked = lockedIds.Concat(outcome.Locked).ToArray(),
+            cascaded = outcome.Cascaded,
+        });
+    }
+
+    private sealed record AuditRef(string Id, string Action);
+
+    // Các bình luận mà audit gần nhất là của userName
+    private static async Task<List<string>> LatestAuditsByAsync(
+        AppDbContext db, string[] ids, string userName, CancellationToken ct) =>
         await db.Database.SqlQuery<string>($"""
-            SELECT id FROM comments WHERE id = ANY({candidates}) ORDER BY id FOR UPDATE
-            """).ToListAsync(ct);
-
-        var mine = await db.Database.SqlQuery<string>($"""
             SELECT comment_id FROM (
                 SELECT DISTINCT ON (comment_id) comment_id, user_name
                 FROM moderation_audits
-                WHERE comment_id = ANY({candidates})
+                WHERE comment_id = ANY({ids})
                 ORDER BY comment_id, id DESC
             ) latest
             WHERE user_name = {userName}
             """).ToListAsync(ct);
 
-        var eligible = mine.ToArray();
-        var conflicts = candidates.Except(eligible).ToArray();
+    // Các bình luận bị kéo theo bởi thao tác của userName trên origins, và audit gần nhất của chúng vẫn là lần kéo theo đó
+    private static async Task<List<AuditRef>> DraggedByAsync(
+        AppDbContext db, string[] origins, string userName, CancellationToken ct)
+    {
+        if (origins.Length == 0) return [];
+        return await db.Database.SqlQuery<AuditRef>($"""
+            SELECT comment_id AS id, action FROM (
+                SELECT DISTINCT ON (comment_id) comment_id, user_name, action, cause_id
+                FROM moderation_audits
+                WHERE comment_id IN (SELECT comment_id FROM moderation_audits WHERE cause_id = ANY({origins}))
+                ORDER BY comment_id, id DESC
+            ) latest
+            WHERE user_name = {userName} AND cause_id = ANY({origins})
+              AND action IN ('exclude_cascade', 'restore')
+            """).ToListAsync(ct);
+    }
 
-        var changed = new List<string>();
-        if (eligible.Length > 0)
-        {
-            if (req.ToExcluded)
-            {
-                changed = await db.Database.SqlQuery<string>($"""
-                    UPDATE comments
-                    SET is_excluded = TRUE, excluded_by = {userName}, excluded_at = NOW(),
-                        reviewed_by = {userName}, reviewed_at = NOW()
-                    WHERE id = ANY({eligible}) AND is_excluded = FALSE
-                    RETURNING id
-                    """).ToListAsync(ct);
-            }
-            else
-            {
-                changed = await db.Database.SqlQuery<string>($"""
-                    UPDATE comments
-                    SET is_excluded = FALSE, excluded_by = NULL, excluded_at = NULL,
-                        reviewed_by = {userName}, reviewed_at = NOW()
-                    WHERE id = ANY({eligible}) AND is_excluded = TRUE
-                    RETURNING id
-                    """).ToListAsync(ct);
-            }
-        }
+    // Khôi phục cả tập (dùng cho hoàn tác): bình luận được chọn ghi "restore", phần kéo theo ghi kèm cause_id cũ
+    private static async Task<MoveOutcome> RestoreAllAsync(
+        AppDbContext db, string[] ids, string[] selected, string userName, CancellationToken ct)
+    {
+        await db.Database.SqlQuery<string>($"""
+            SELECT id FROM comments WHERE id = ANY({ids}) ORDER BY id FOR UPDATE
+            """).ToListAsync(ct);
 
-        if (changed.Count > 0)
+        var changedAll = await db.Database.SqlQuery<string>($"""
+            UPDATE comments
+            SET is_excluded = FALSE, excluded_by = NULL, excluded_at = NULL,
+                reviewed_by = {userName}, reviewed_at = NOW()
+            WHERE id = ANY({ids}) AND is_excluded = TRUE
+            RETURNING id
+            """).ToListAsync(ct);
+
+        if (changedAll.Count > 0)
         {
-            var changedArray = changed.ToArray();
-            var action = req.ToExcluded ? "exclude" : "restore";
+            var changedArray = changedAll.ToArray();
             await db.Database.ExecuteSqlInterpolatedAsync($"""
-                INSERT INTO moderation_audits (comment_id, user_name, action)
-                SELECT x, {userName}, {action} FROM unnest({changedArray}) AS x
+                INSERT INTO moderation_audits (comment_id, user_name, action, cause_id)
+                SELECT x, {userName}, 'restore',
+                       CASE WHEN x = ANY({selected}) THEN NULL
+                            ELSE (SELECT a.cause_id FROM moderation_audits a
+                                  WHERE a.comment_id = x ORDER BY a.id DESC LIMIT 1) END
+                FROM unnest({changedArray}) AS x
                 """, ct);
         }
 
-        await tx.CommitAsync(ct);
-
-        await BroadcastMovedAsync(db, hub, state, changed, req.ToExcluded, userName, undo: true, ct);
-
-        return TypedResults.Ok<object>(new
-        {
-            undone = changed.Count,
-            undoneIds = changed,
-            conflicts,
-            skipped = eligible.Length - changed.Count,
-            locked = lockedIds,
-        });
+        var changed = changedAll.Where(selected.Contains).ToList();
+        var dragged = changedAll.Except(changed).ToList();
+        return new MoveOutcome(changed, changedAll, dragged, [], [], ids.Count(selected.Contains) - changed.Count, [], []);
     }
 
     // Giữ lại: đánh dấu đã duyệt, bình luận vẫn ở "Đang lọc". Chỉ áp dụng cho bình luận đang lọc.

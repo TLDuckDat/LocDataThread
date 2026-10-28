@@ -12,6 +12,8 @@
     <div id="presence" class="presence" aria-label="Đồng đội đang online"></div>
     <a class="btn ghost" href="./">← Về danh sách lọc</a>
     <div id="status" class="status" data-state="connecting">Đang kết nối…</div>
+    <span id="me" class="muted" aria-label="Tài khoản"></span>
+    <button id="signOut" class="btn ghost" type="button" title="Quên mã trên máy này để nhập mã khác">Đổi mã</button>
   </header>
 
   <main class="layout single">
@@ -65,19 +67,11 @@
 
   <div class="hotkeys muted">Phím tắt: <kbd>J</kbd>/<kbd>K</kbd> di chuyển · <kbd>Space</kbd> chọn · <kbd>P</kbd> đưa vào CSDL chính · <kbd>R</kbd> loại</div>
 
-  <div id="nameModal" class="modal" hidden>
-    <form id="nameForm" class="modal-card">
-      <h2>Bạn là ai?</h2>
-      <p class="muted">Tên này được ghi lại cho mọi quyết định bạn đưa ra trong kho phụ.</p>
-      <input id="nameInput" maxlength="40" required placeholder="Ví dụ: Minh">
-      <button class="btn primary" type="submit">Vào kho phụ</button>
-    </form>
-  </div>
-
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <script src="js/vendor/signalr.min.js"></script>
   <script src="js/util.js"></script>
+  <script src="js/auth.js"></script>
   <script src="js/queue.js"></script>
 </body>
 </html>

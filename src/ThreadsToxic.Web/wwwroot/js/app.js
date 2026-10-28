@@ -10,7 +10,6 @@
     meta_ai: "Meta AI",
   };
   const sourceLabel = (source) => SOURCE_LABELS[source] || source;
-  const NAME_KEY = "threads-toxic-name";
   const HEARTBEAT_MS = 20000;
 
   const state = {
@@ -84,17 +83,14 @@
     setTimeout(() => el.remove(), options.ms ?? 3500);
   };
 
-  const storage = {
-    get() { try { return localStorage.getItem(NAME_KEY); } catch { return null; } },
-    set(v) { try { localStorage.setItem(NAME_KEY, v); } catch { /* chế độ riêng tư: bỏ qua */ } },
-  };
-
   async function api(path, options = {}) {
     const res = await fetch(path, {
       ...options,
-      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      headers: ThreadsAuth.headers({ "Content-Type": "application/json", ...(options.headers || {}) }),
     });
     const body = await res.json().catch(() => null);
+    // Đọc dữ liệu bị từ chối: mã truy cập đã bị admin đổi hoặc gỡ -> nhập lại mã
+    if (res.status === 401 && !options.method) ThreadsAuth.signOut();
     if (!res.ok) {
       const error = new Error(typeof body === "string" ? body : "Yêu cầu thất bại.");
       error.status = res.status;
@@ -126,7 +122,7 @@
     const params = new URLSearchParams({ bucket: state.bucket, page: state.page, pageSize: PAGE_SIZE });
     const map = {
       keyword: "#keyword", word: "#word", minScore: "#minScore", replyLevel: "#replyLevel", source: "#source",
-      review: "#review", reviewedBy: "#reviewedBy",
+      review: "#review", reviewedBy: "#reviewedBy", assigned: "#assigned", order: "#order",
     };
     for (const [key, sel] of Object.entries(map)) {
       const value = $(sel).value.trim();
@@ -328,6 +324,8 @@
         <dt>Từ khớp</dt><dd>${esc(words)}</dd>
         <dt>Nguồn</dt><dd>${item.source ? `Lọc trùng · ${esc(sourceLabel(item.source))}` : "Dữ liệu chính"}</dd>
         ${item.isExcluded ? `<dt>Đã loại bởi</dt><dd>${esc(item.excludedBy || "—")}</dd>` : ""}
+        ${item.isExcluded && item.threadParentId ? `<dt>Khôi phục</dt><dd>Cần bình luận cha đang ở "Đang lọc"; nếu không, dùng "Khôi phục cả chuỗi"</dd>` : ""}
+        ${!item.isExcluded && item.replyLevel < 3 ? `<dt>Lưu ý</dt><dd>Loại bình luận này sẽ loại kèm mọi trả lời bên dưới</dd>` : ""}
         <dt>Xử lý gần nhất</dt><dd>${item.reviewedBy ? `${esc(item.reviewedBy)} · ${esc(formatDate(item.reviewedAt))}` : "Chưa ai xử lý"}</dd>
         <dt>Liên kết</dt><dd>${link}</dd>
       </dl>
@@ -399,17 +397,22 @@
   const UNDO_WINDOW_MS = 8000;
 
   // Server quyết định bình luận nào bị khóa bởi người khác (trả về trong result.locked).
-  async function moveItems(ids, toExcluded, { force = false } = {}) {
+  // Chuỗi hội thoại: loại một bình luận thì các trả lời bên dưới bị loại theo (result.cascaded);
+  // khôi phục một trả lời khi cha/ông còn ở "Đã loại" bị chặn (result.blocked), trừ khi withAncestors.
+  async function moveItems(ids, toExcluded, { force = false, withAncestors = false } = {}) {
     if (!ids.length) return;
 
     try {
-      const result = await postWithSession("/api/items/move", { ids, toExcluded, force });
+      const result = await postWithSession("/api/items/move", { ids, toExcluded, force, withAncestors });
       const locked = result.locked || [];
+      const blocked = result.blocked || [];
       const movedIds = result.movedIds || [];
-      const handled = ids.filter((id) => !locked.includes(id));
+      const handled = ids.filter((id) => !locked.includes(id) && !blocked.includes(id));
 
       const verb = toExcluded ? "Đã loại" : "Đã khôi phục";
       let message = `${verb} ${result.moved} bình luận.`;
+      if (result.cascaded?.length) message += ` Kèm ${result.cascaded.length} trả lời bên dưới (loại theo cha).`;
+      if (result.restoredAncestors?.length) message += ` Kèm ${result.restoredAncestors.length} bình luận cha để chuỗi liền mạch.`;
       if (result.skipped) message += ` ${result.skipped} bình luận đã ở đúng mục.`;
 
       const actions = [];
@@ -419,13 +422,20 @@
       }
       if (locked.length) {
         const holders = [...new Set(locked.map((id) => state.locks[id]).filter(Boolean))];
-        message += ` Bỏ qua ${locked.length} bình luận đang được ${holders.join(", ") || "đồng đội"} xem.`;
-        actions.push({ label: "Vẫn chuyển", onClick: () => moveItems(locked, toExcluded, { force: true }) });
+        message += ` Bỏ qua ${locked.length} bình luận (hoặc trả lời bên dưới) đang được ${holders.join(", ") || "đồng đội"} xem.`;
+        // "Vẫn chuyển" (vượt khóa) chỉ dành cho admin
+        if (state.me?.role === "admin") {
+          actions.push({ label: "Vẫn chuyển", onClick: () => moveItems(locked, toExcluded, { force: true }) });
+        }
+      }
+      if (blocked.length) {
+        message += ` ${blocked.length} bình luận chưa khôi phục được vì bình luận cha vẫn ở "Đã loại".`;
+        actions.push({ label: "Khôi phục cả chuỗi", onClick: () => moveItems(blocked, false, { withAncestors: true }) });
       }
       toast(message, { actions, ms: actions.length ? UNDO_WINDOW_MS : undefined });
 
       for (const id of handled) state.selected.delete(id);
-      if (handled.includes(state.focusId)) setFocus(null);
+      if (handled.includes(state.focusId)) setFocus(nextFocusAfter(new Set([...handled, ...movedIds])));
     } catch (err) {
       toast(`Thao tác thất bại: ${err.message}`);
     }
@@ -437,6 +447,7 @@
     try {
       const result = await postWithSession("/api/items/undo", { ids, toExcluded });
       let message = `Đã hoàn tác ${result.undone} bình luận.`;
+      if (result.cascaded?.length) message += ` Kèm ${result.cascaded.length} trả lời đã bị kéo theo.`;
       if (result.conflicts.length) {
         message += ` ${result.conflicts.length} bình luận đã bị người khác thao tác sau đó nên giữ nguyên.`;
       }
@@ -451,10 +462,19 @@
   }
 
   // Giữ lại: đánh dấu đã duyệt, bình luận vẫn ở "Đang lọc" (không khóa, không thể hoàn tác bằng nút này)
+  // Bình luận kế tiếp để xem sau khi xử lý xong bình luận đang xem (bỏ qua những dòng vừa đổi)
+  function nextFocusAfter(done) {
+    const idx = state.items.findIndex((i) => i.id === state.focusId);
+    const after = state.items.slice(idx + 1).find((i) => !done.has(i.id));
+    const before = state.items.slice(0, Math.max(idx, 0)).reverse().find((i) => !done.has(i.id));
+    return (after || before)?.id ?? null;
+  }
+
   async function approveItems(ids) {
     if (!ids.length) return;
     try {
       const result = await postWithSession("/api/items/approve", { ids });
+      if (ids.includes(state.focusId)) setFocus(nextFocusAfter(new Set(ids)));
       toast(`Đã giữ lại ${result.approved} bình luận.${result.skipped ? ` ${result.skipped} bình luận đã được loại nên bỏ qua.` : ""}`);
       for (const id of ids) state.selected.delete(id);
     } catch (err) {
@@ -488,7 +508,7 @@
 
     hub.on("ItemsMoved", ({ ids, toExcluded, by, counts }) => {
       for (const id of ids) delete state.locks[id];
-      if (by !== state.me.name) {
+      if (by !== state.me?.name) {
         toast(`${by} đã ${toExcluded ? "loại" : "khôi phục"} ${ids.length} bình luận.`);
       }
       // Cập nhật huy hiệu ngay; thiếu trường (server cũ) thì chỉ dựa vào lần tải lại.
@@ -501,9 +521,15 @@
     });
 
     hub.on("ItemsReviewed", ({ by, ids }) => {
-      if (by !== state.me.name) toast(`${by} đã giữ lại ${ids.length} bình luận.`);
+      if (by !== state.me?.name) toast(`${by} đã giữ lại ${ids.length} bình luận.`);
       refreshProgress();
       scheduleReload();
+    });
+
+    hub.on("AssignmentsChanged", () => {
+      refreshProgress();
+      scheduleReload();
+      if (!$("#assignModal").hidden) loadAssignments();
     });
 
     hub.on("QueueChanged", () => {
@@ -548,17 +574,97 @@
     });
   }
 
+  // Vào phòng bằng mã truy cập; tên và vai trò do server trả về theo mã. Mã sai thì hỏi lại.
   async function joinRoom() {
-    const result = await hub.invoke("Join", state.me.name);
-    state.token = result.token;
-    state.connected = true;
-    setStatus("Đã kết nối", "online");
+    for (;;) {
+      try {
+        const result = await hub.invoke("Join", await ThreadsAuth.ensure());
+        state.me = { name: result.name, role: result.role };
+        state.token = result.token;
+        state.connected = true;
+        setStatus("Đã kết nối", "online");
+        renderMe();
+        return;
+      } catch (err) {
+        if (!String(err.message).includes("Mã truy cập không đúng")) throw err;
+        ThreadsAuth.clear();
+        await ThreadsAuth.ask("Mã truy cập không đúng hoặc đã bị đổi. Nhập lại mã do admin cấp.");
+      }
+    }
+  }
+
+  // ---------- Chia việc (admin) ----------
+  async function loadAssignments() {
+    try {
+      const a = await api("/api/items/assignments");
+      $("#assignRows").innerHTML = a.people.map((p) =>
+        `<tr><td>${esc(p.name)}</td><td>${p.assigned.toLocaleString("vi-VN")}</td>` +
+        `<td>${p.done.toLocaleString("vi-VN")}</td><td><b>${p.remaining.toLocaleString("vi-VN")}</b></td></tr>`).join("");
+      $("#assignUnassigned").textContent =
+        `Chưa giao (chưa xử lý): ${a.unassignedRemaining.toLocaleString("vi-VN")} · ` +
+        `bình luận dài không có trả lời (không giao): ${a.longLeaves.toLocaleString("vi-VN")}`;
+      const options = a.people.map((p) => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join("");
+      $("#transferFrom").innerHTML = options;
+      $("#transferTo").innerHTML = options;
+    } catch (err) {
+      toast(`Không tải được phần việc: ${err.message}`);
+    }
+  }
+
+  async function splitWork() {
+    if (!confirm("Chia đều toàn bộ phần chưa giao cho các thành viên?")) return;
+    try {
+      await postWithSession("/api/admin/assign/split", {});
+      toast("Đã chia việc.");
+      loadAssignments();
+    } catch (err) {
+      toast(`Không chia được: ${err.message}`);
+    }
+  }
+
+  async function transferWork() {
+    const from = $("#transferFrom").value;
+    const to = $("#transferTo").value;
+    if (from === to) { toast("Chọn hai người khác nhau."); return; }
+    if (!confirm(`Chuyển toàn bộ phần chưa làm của ${from} sang ${to}?`)) return;
+    try {
+      const result = await postWithSession("/api/admin/assign/transfer", { from, to });
+      toast(`Đã chuyển ${result.moved} bình luận từ ${from} sang ${to}.`);
+      loadAssignments();
+    } catch (err) {
+      toast(`Không chuyển được: ${err.message}`);
+    }
+  }
+
+  // Lần đầu vào: đã được giao việc thì mở "Phần của tôi · chưa xử lý", chưa thì xem tất cả
+  async function chooseDefaultView() {
+    try {
+      const a = await api("/api/items/assignments");
+      const mine = a.people.find((x) => x.name === state.me?.name);
+      if (mine?.assigned) {
+        $("#assigned").value = "me";
+        $("#review").value = "unreviewed";
+      } else {
+        $("#assigned").value = "";
+      }
+    } catch {
+      $("#assigned").value = "";
+    }
+  }
+
+  function renderMe() {
+    $("#assignBtn").hidden = state.me?.role !== "admin";
+    $("#me").textContent = state.me ? `${state.me.name}${state.me.role === "admin" ? " · admin" : ""}` : "";
   }
 
   // ---------- Tiến độ & Kho phụ ----------
   async function refreshProgress() {
     try {
-      const p = await api("/api/items/progress");
+      const [p, a] = await Promise.all([api("/api/items/progress"), api("/api/items/assignments")]);
+      const mine = a.people.find((x) => x.name === state.me?.name);
+      $("#myProgress").textContent = mine && mine.assigned
+        ? `Phần của tôi: còn ${mine.remaining.toLocaleString("vi-VN")}/${mine.assigned.toLocaleString("vi-VN")}`
+        : "";
       const today = p.todayByReviewer.map((r) => `${esc(r.name)} ${r.count}`).join(" · ") || "chưa có";
       const top = p.byReviewer.slice(0, 5).map((r) => `${esc(r.name)} ${r.count}`).join(" · ") || "chưa có";
       $("#progress").innerHTML =
@@ -593,6 +699,12 @@
     $("#source").addEventListener("change", onFilterChange);
     $("#review").addEventListener("change", onFilterChange);
     $("#reviewedBy").addEventListener("input", debounce(onFilterChange, 300));
+    $("#assigned").addEventListener("change", onFilterChange);
+    $("#order").addEventListener("change", onFilterChange);
+    $("#assignBtn").addEventListener("click", () => { $("#assignModal").hidden = false; loadAssignments(); });
+    $("#assignClose").addEventListener("click", () => { $("#assignModal").hidden = true; });
+    $("#splitBtn").addEventListener("click", splitWork);
+    $("#transferBtn").addEventListener("click", transferWork);
     $("#approveBtn").addEventListener("click", approveSelectionOrFocus);
     $("#filters").addEventListener("submit", (e) => e.preventDefault());
 
@@ -649,45 +761,23 @@
     });
   }
 
-  function askName() {
-    return new Promise((resolve) => {
-      const modal = $("#nameModal");
-      const input = $("#nameInput");
-      modal.hidden = false;
-      input.focus();
-      $("#nameForm").addEventListener("submit", (e) => {
-        e.preventDefault();
-        const name = input.value.trim();
-        if (!name) return;
-        modal.hidden = true;
-        resolve(name);
-      }, { once: true });
-    });
-  }
-
   async function start() {
     bindUi();
-    const name = storage.get() || await askName();
-    storage.set(name);
-    state.me = { name };
-
-    // Đọc dữ liệu không cần SignalR: tải song song với lúc kết nối để danh sách hiện sớm nhất
-    reload();
-    refreshProgress();
-    refreshQueueCount();
+    $("#signOut").addEventListener("click", () => ThreadsAuth.signOut());
+    await ThreadsAuth.ensure();
 
     connectHub();
     try {
       await hub.start();
       await joinRoom();
-      // Bình luận đã bấm xem trước khi kết nối xong: giữ khóa ngay để đồng đội thấy
-      if (state.focusId) setFocus(state.focusId);
-      // Thao tác của đồng đội trong lúc đang kết nối chưa có sự kiện: tải lại một lần cho chắc
-      scheduleReload();
     } catch (err) {
       setStatus("Không kết nối được máy chủ", "offline");
       toast(`Lỗi kết nối: ${err.message}`);
     }
+    await chooseDefaultView();
+    reload();
+    refreshProgress();
+    refreshQueueCount();
   }
 
   start();

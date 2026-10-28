@@ -2,7 +2,6 @@
 // Đưa vào CSDL chính (tạo bình luận trong "Đang lọc") hoặc loại. Thời gian thực qua SignalR.
 (() => {
   const PAGE_SIZE = 50;
-  const NAME_KEY = "threads-toxic-name";
   const REASON_LABELS = {
     duplicate_id: "Trùng id",
     duplicate_content: "Trùng nội dung",
@@ -51,17 +50,14 @@
     setTimeout(() => el.remove(), ms);
   };
 
-  const storage = {
-    get() { try { return localStorage.getItem(NAME_KEY); } catch { return null; } },
-    set(v) { try { localStorage.setItem(NAME_KEY, v); } catch { /* chế độ riêng tư: bỏ qua */ } },
-  };
-
   async function api(path, options = {}) {
     const res = await fetch(path, {
       ...options,
-      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      headers: ThreadsAuth.headers({ "Content-Type": "application/json", ...(options.headers || {}) }),
     });
     const body = await res.json().catch(() => null);
+    // Đọc dữ liệu bị từ chối: mã truy cập đã bị admin đổi hoặc gỡ -> nhập lại mã
+    if (res.status === 401 && !options.method) ThreadsAuth.signOut();
     if (!res.ok) {
       const error = new Error(typeof body === "string" ? body : "Yêu cầu thất bại.");
       error.status = res.status;
@@ -175,7 +171,8 @@
     const pendingView = state.decision === "pending";
     $("#promoteBtn").hidden = !pendingView;
     $("#rejectBtn").hidden = !pendingView;
-    $("#bulkBox").hidden = !pendingView || state.total === 0;
+    // Hàng loạt chỉ dành cho admin (server cũng chặn)
+    $("#bulkBox").hidden = !pendingView || state.total === 0 || state.me?.role !== "admin";
     $("#bulkCount").textContent = state.total.toLocaleString("vi-VN");
     $("#selCount").textContent = `Đã chọn ${state.selected.size}`;
     $("#selectPage").checked = state.items.length > 0 && state.items.every((i) => state.selected.has(i.id));
@@ -243,6 +240,9 @@
     if (result.rejected) message += ` Đã loại ${result.rejected}.`;
     if (result.restored) message += ` Đã hoàn tác ${result.restored}.`;
     if (result.skippedInMain) message += ` ${result.skippedInMain} bản ghi vừa có trong CSDL chính nên tự ẩn.`;
+    if (result.blockedChain?.length) {
+      message += ` ${result.blockedChain.length} bản trả lời chưa đưa được vì bình luận cha chưa có trong CSDL chính hoặc đã bị loại (vẫn chờ duyệt).`;
+    }
     return message.trim() || "Không có bản ghi nào thay đổi.";
   }
 
@@ -307,7 +307,7 @@
   function connectHub() {
     hub = new signalR.HubConnectionBuilder().withUrl("/hubs/collab").withAutomaticReconnect().build();
     hub.on("QueueChanged", ({ by }) => {
-      if (by && by !== state.me.name) toast(`${by} vừa xử lý kho phụ.`);
+      if (by && by !== state.me?.name) toast(`${by} vừa xử lý kho phụ.`);
       scheduleReload();
     });
     hub.on("PresenceChanged", (list) => {
@@ -318,11 +318,25 @@
     hub.onclose(() => { state.connected = false; state.token = null; setStatus("Mất kết nối", "offline"); });
   }
 
+  // Vào phòng bằng mã truy cập; tên và vai trò do server trả về theo mã. Mã sai thì hỏi lại.
   async function joinRoom() {
-    const result = await hub.invoke("Join", state.me.name);
-    state.token = result.token;
-    state.connected = true;
-    setStatus("Đã kết nối", "online");
+    for (;;) {
+      try {
+        const result = await hub.invoke("Join", await ThreadsAuth.ensure());
+        state.me = { name: result.name, role: result.role };
+        state.token = result.token;
+        state.connected = true;
+        setStatus("Đã kết nối", "online");
+        $("#me").textContent = `${result.name}${result.role === "admin" ? " · admin" : ""}`;
+        // Danh sách có thể đã tải xong trước khi biết vai trò: hiện ngay phần chỉ dành cho admin
+        if (state.counts) renderCounts();
+        return;
+      } catch (err) {
+        if (!String(err.message).includes("Mã truy cập không đúng")) throw err;
+        ThreadsAuth.clear();
+        await ThreadsAuth.ask("Mã truy cập không đúng hoặc đã bị đổi. Nhập lại mã do admin cấp.");
+      }
+    }
   }
 
   function setStatus(text, stateName) {
@@ -401,27 +415,10 @@
     });
   }
 
-  function askName() {
-    return new Promise((resolve) => {
-      const modal = $("#nameModal");
-      const input = $("#nameInput");
-      modal.hidden = false;
-      input.focus();
-      $("#nameForm").addEventListener("submit", (e) => {
-        e.preventDefault();
-        const name = input.value.trim();
-        if (!name) return;
-        modal.hidden = true;
-        resolve(name);
-      }, { once: true });
-    });
-  }
-
   async function start() {
     bindUi();
-    const name = storage.get() || await askName();
-    storage.set(name);
-    state.me = { name };
+    $("#signOut").addEventListener("click", () => ThreadsAuth.signOut());
+    await ThreadsAuth.ensure();
 
     // Đọc dữ liệu không cần SignalR: tải song song với lúc kết nối
     reload();

@@ -48,6 +48,14 @@ public class Comment
     // Người xử lý gần nhất (duyệt, loại, khôi phục, hoàn tác)
     public string? ReviewedBy { get; set; }
     public DateTimeOffset? ReviewedAt { get; set; }
+
+    // Luồng hội thoại (do trigger trong DB điền, xem db/migrations/007_thread_links.sql):
+    // cha trực tiếp (null với F0) và bình luận gốc F0 của luồng
+    public string? ThreadParentId { get; set; }
+    public string? ThreadRootId { get; set; }
+
+    // Người phụ trách (chia việc theo bài viết); null = chưa giao
+    public string? AssignedTo { get; set; }
 }
 
 // Cột JSONB: dữ liệu phi quan hệ từ bộ phát hiện tự động

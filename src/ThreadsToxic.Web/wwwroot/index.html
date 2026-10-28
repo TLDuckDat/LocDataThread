@@ -11,9 +11,13 @@
     <div class="brand">Lọc cộng tác <span>Threads</span></div>
     <div id="presence" class="presence" aria-label="Đồng đội đang online"></div>
     <div id="progress" class="progress muted" aria-label="Tiến độ lọc"></div>
+    <b id="myProgress" class="my-progress"></b>
+    <button id="assignBtn" class="btn ghost" type="button" hidden>👥 Chia việc</button>
     <a class="btn ghost" href="queue.html">📋 Kho phụ <b id="queueCount">0</b></a>
     <a class="btn ghost" href="export.html">📥 Xuất Excel &amp; CSV</a>
     <div id="status" class="status" data-state="connecting">Đang kết nối…</div>
+    <span id="me" class="muted" aria-label="Tài khoản"></span>
+    <button id="signOut" class="btn ghost" type="button" title="Quên mã trên máy này để nhập mã khác">Đổi mã</button>
   </header>
 
   <main class="layout">
@@ -24,6 +28,15 @@
       </nav>
 
       <form class="filters" id="filters" autocomplete="off">
+        <select id="assigned" aria-label="Phần việc">
+          <option value="me">Phần của tôi</option>
+          <option value="">Tất cả bình luận</option>
+          <option value="none">Chưa giao cho ai</option>
+        </select>
+        <select id="order" aria-label="Sắp xếp">
+          <option value="thread">Theo luồng hội thoại</option>
+          <option value="">Điểm cao trước</option>
+        </select>
         <input id="keyword" type="search" placeholder="Tìm trong nội dung…">
         <input id="word" type="search" placeholder="Từ khóa đã khớp (vd: vcl)">
         <select id="minScore" aria-label="Điểm tối thiểu">
@@ -79,19 +92,33 @@
 
   <div class="hotkeys muted">Phím tắt: <kbd>J</kbd>/<kbd>K</kbd> di chuyển · <kbd>Space</kbd> chọn · <kbd>X</kbd> chuyển sang tab còn lại · <kbd>A</kbd> giữ lại</div>
 
-  <div id="nameModal" class="modal" hidden>
-    <form id="nameForm" class="modal-card">
-      <h2>Bạn là ai?</h2>
-      <p class="muted">Tên này sẽ hiện cho đồng đội biết bạn đang lọc bình luận nào.</p>
-      <input id="nameInput" maxlength="40" required placeholder="Ví dụ: Minh">
-      <button class="btn primary" type="submit">Vào phòng lọc</button>
-    </form>
+  <div id="assignModal" class="modal" hidden>
+    <div class="modal-card assign-card" role="dialog" aria-labelledby="assignTitle">
+      <h2 id="assignTitle">Chia việc theo bài viết</h2>
+      <p class="muted">Cả bài viết (và cả luồng F0 → F3) về một người. Bài đã có người phụ trách thì phần mới về đúng người đó.
+        Bình luận dài hơn 300 ký tự không có trả lời không được giao (trang xuất cũng bỏ).</p>
+      <table class="assign-table">
+        <thead><tr><th>Người</th><th>Được giao</th><th>Đã xử lý</th><th>Còn lại</th></tr></thead>
+        <tbody id="assignRows"></tbody>
+      </table>
+      <p id="assignUnassigned" class="muted"></p>
+      <button id="splitBtn" class="btn primary" type="button">Chia đều phần chưa giao cho các thành viên</button>
+      <div class="assign-transfer">
+        <span>Chuyển phần chưa làm của</span>
+        <select id="transferFrom" aria-label="Từ người"></select>
+        <span>sang</span>
+        <select id="transferTo" aria-label="Sang người"></select>
+        <button id="transferBtn" class="btn" type="button">Chuyển</button>
+      </div>
+      <button id="assignClose" class="btn ghost" type="button">Đóng</button>
+    </div>
   </div>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <script src="js/vendor/signalr.min.js"></script>
   <script src="js/util.js"></script>
+  <script src="js/auth.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

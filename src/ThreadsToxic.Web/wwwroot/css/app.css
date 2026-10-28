@@ -473,3 +473,11 @@ a.btn[hidden] { display: none; }
 .layout.single { grid-template-columns: minmax(0, 1fr); }
 .filters.queue-filters { grid-template-columns: 2fr 1.2fr 1.4fr 1.6fr; }
 @media (max-width: 700px) { .filters.queue-filters { grid-template-columns: 1fr 1fr; } }
+
+/* Chia việc (admin) */
+.my-progress { font-size: 13px; white-space: nowrap; }
+.assign-card { width: min(640px, calc(100vw - 32px)); gap: 12px; }
+.assign-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.assign-table th, .assign-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+.assign-table td:not(:first-child), .assign-table th:not(:first-child) { text-align: right; }
+.assign-transfer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
