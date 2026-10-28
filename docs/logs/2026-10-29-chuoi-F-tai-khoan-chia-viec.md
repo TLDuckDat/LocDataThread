@@ -130,19 +130,14 @@ Hai lỗi phát hiện khi chạy e2e, đều nằm trong **test** chứ không 
 
 Ảnh chụp đã xem: hộp Chia việc, màn hình "Phần của tôi", giao diện điện thoại 390px. Đã xác nhận không tràn ngang và tên độc hại hiển thị dạng văn bản.
 
-## 6. Việc CHƯA làm, cần bạn xác nhận
+## 6. Triển khai (29/10/2026)
 
-1. **Áp dụng migration 007 và 008 lên Supabase.** Đã có bản sao lưu `backups/supabase_20261028_234201.dump`:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File tools\supabase_backup.ps1
-   powershell -ExecutionPolicy Bypass -File tools\supabase_psql.ps1 -v ON_ERROR_STOP=1 -f db\migrations\007_thread_links.sql
-   powershell -ExecutionPolicy Bypass -File tools\supabase_psql.ps1 -v ON_ERROR_STOP=1 -f db\migrations\008_assignment.sql
-   powershell -ExecutionPolicy Bypass -File tools\supabase_psql.ps1 -f db\checks\chain_integrity.sql
-   ```
-   Migration 007 sẽ loại 3 bình luận trong luồng `cmt_C_a8jlWz_U_` như mô tả ở mục 2.
-2. **Tạo 5 mã** bằng `tools/new_token.py`: 1 admin và 4 member. Đặt `Auth__Users__*` trên Railway **trước khi deploy**. Thiếu cấu hình này thì app không khởi động; đây là chủ đích, để app không chạy mở cho mọi người.
-3. Thứ tự deploy: migration trước, cấu hình biến môi trường trên Railway, deploy code, rồi admin bấm "Chia việc" → "Chia đều".
-4. Chưa commit. Nhánh `improve/p0` vẫn còn các thay đổi cũ chưa commit trộn với các thay đổi lần này.
+1. Ghép với `dfff082` (bản đang chạy trên Railway): thư mục làm việc cũ hơn `dfff082` ở một số file (Program.cs thiếu PORT/Supabase, mất bộ đệm trang, xuất theo lô, README phần Supabase/Deploy). Đã ghép lại từng file, giữ phần của `dfff082` và áp thay đổi lần này lên trên; bản trước khi ghép lưu ở nhánh `backup/wip-20261029`. Sau khi ghép: .NET 214/214, JS 13/13, e2e đạt (sửa thêm: Kho phụ hiện nút hàng loạt cho admin ngay khi vào phòng).
+2. Sao lưu Supabase: `backups/supabase_20261029_062530.dump`.
+3. Migration 007 và 008 đã chạy trên Supabase; `chain_integrity.sql` 0 vi phạm; đúng 3 dòng tự loại theo (`cmt_C_bqXhiy28p`, `cmt_C_bDYClBerN`, `cmt_C_brtOpy4vf`, người thao tác `system`); 3 659 bản trả lời có cha.
+4. Tài khoản: admin `hd.dat`; member `tc.tuan`, `nhb.khiem`, `nk.hung`, `nnb.tran`. Mã gốc ở `backups/access_tokens_20261029.txt` (gitignore). Cần đặt 15 dòng `Auth__Users__*` trong Railway > Variables.
+5. Code đã push lên `main` (`3bbfb23`), Railway tự deploy.
+6. Lưu ý: số liệu cũ ghi tên "Đạt"/"noname"; từ nay ghi theo tên tài khoản (`hd.dat`...).
 
 ## 7. Giới hạn đã biết
 
