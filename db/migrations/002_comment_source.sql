@@ -3,7 +3,7 @@
 --   'duplicate_content'… = nạp từ hàng chờ lọc trùng (threads_review.db), giá trị là lý do bị cách ly
 -- Idempotent: chạy lại nhiều lần an toàn.
 --
--- Chạy: powershell -ExecutionPolicy Bypass -File tools/supabase_psql.ps1 -v ON_ERROR_STOP=1 -f db/migrations/002_comment_source.sql
+-- Chạy: powershell -ExecutionPolicy Bypass -File tools/local_db.ps1 -Action migrate
 
 ALTER TABLE comments ADD COLUMN IF NOT EXISTS source VARCHAR(40);
 

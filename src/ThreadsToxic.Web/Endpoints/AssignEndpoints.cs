@@ -18,7 +18,8 @@ public record AssigneeLoad(string Name, int Assigned, int Done, int Remaining);
 
 // UnassignedRemaining: chưa giao và chưa xử lý; LongLeaves: bình luận dài hơn 300 ký tự và không có trả lời,
 // không giao vì trang xuất cũng không lấy (vẫn xem/xử lý được ở danh sách chung)
-public record AssignmentSummary(int UnassignedRemaining, int LongLeaves, List<AssigneeLoad> People);
+// Me: tên người gọi (theo mã truy cập), để chọn chế độ xem mặc định mà không chờ SignalR Join
+public record AssignmentSummary(int UnassignedRemaining, int LongLeaves, List<AssigneeLoad> People, string? Me = null);
 
 /// <summary>
 /// Chia việc theo bài viết: cả bài (nên cả luồng F0..F3) về một người. Chỉ admin chia / chuyển;
@@ -38,8 +39,8 @@ public static class AssignEndpoints
         admin.MapPost("/transfer", TransferAsync);
     }
 
-    private static async Task<IResult> SummaryAsync(AppDbContext db, AccessTokens tokens, CancellationToken ct) =>
-        Results.Ok(await GetSummaryAsync(db, tokens, ct));
+    private static async Task<IResult> SummaryAsync(AppDbContext db, AccessTokens tokens, HttpContext http, CancellationToken ct) =>
+        Results.Ok((await GetSummaryAsync(db, tokens, ct)) with { Me = AuthFilters.CurrentUser(http)?.Name });
 
     private sealed record NameCount(string Name, int Assigned, int Done, int Remaining);
 

@@ -1,9 +1,24 @@
-"""Chuỗi kết nối PostgreSQL mặc định cho các tool: database Supabase khai trong .env ở gốc repo."""
+"""Chuỗi kết nối PostgreSQL mặc định cho các tool: database local khai trong .env ở gốc repo.
+
+Đọc đúng ConnectionStrings__Default mà app dùng (dạng Npgsql), nên chỉ cần sửa một chỗ.
+"""
 from pathlib import Path
 
 from psycopg2.extensions import make_dsn
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+KEY = "ConnectionStrings__Default"
+
+# Tên khóa trong chuỗi Npgsql -> tên tham số của psycopg2
+NPGSQL_TO_PSYCOPG = {
+    "host": "host",
+    "server": "host",
+    "port": "port",
+    "database": "dbname",
+    "username": "user",
+    "user id": "user",
+    "password": "password",
+}
 
 
 def read_env(path=ENV_FILE):
@@ -20,19 +35,27 @@ def read_env(path=ENV_FILE):
     return values
 
 
+def parse_npgsql(connection_string):
+    """'Host=...;Port=...;Database=...' -> kwargs cho psycopg2; khóa không dùng (Pool Size...) bị bỏ qua."""
+    kwargs = {}
+    for part in connection_string.split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        name = NPGSQL_TO_PSYCOPG.get(key.strip().lower())
+        if name:
+            kwargs[name] = value.strip()
+    return kwargs
+
+
 def default_dsn():
-    """DSN từ SUPABASE_DB_* trong .env; dừng với thông báo rõ nếu thiếu."""
+    """DSN từ ConnectionStrings__Default trong .env; dừng với thông báo rõ nếu thiếu."""
     if not ENV_FILE.exists():
         raise SystemExit(f"Không thấy {ENV_FILE}. Chép .env.example thành .env rồi điền, hoặc truyền --dsn.")
-    env = read_env()
-    missing = [k for k in ("SUPABASE_DB_HOST", "SUPABASE_DB_USER", "SUPABASE_DB_PASSWORD") if not env.get(k)]
-    if missing:
-        raise SystemExit(f"Thiếu {', '.join(missing)} trong {ENV_FILE}, hoặc truyền --dsn.")
-    return make_dsn(
-        host=env["SUPABASE_DB_HOST"],
-        port=env.get("SUPABASE_DB_PORT") or "5432",
-        dbname=env.get("SUPABASE_DB_NAME") or "postgres",
-        user=env["SUPABASE_DB_USER"],
-        password=env["SUPABASE_DB_PASSWORD"],
-        sslmode=env.get("SUPABASE_DB_SSLMODE") or "require",
-    )
+    connection_string = read_env().get(KEY)
+    if not connection_string:
+        raise SystemExit(f"Thiếu {KEY} trong {ENV_FILE}, hoặc truyền --dsn.")
+    kwargs = parse_npgsql(connection_string)
+    if "dbname" not in kwargs or "user" not in kwargs:
+        raise SystemExit(f"{KEY} trong {ENV_FILE} thiếu Database hoặc Username.")
+    return make_dsn(**kwargs)

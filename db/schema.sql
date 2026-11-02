@@ -1,5 +1,5 @@
 -- Schema cho ThreadsToxic (MVP: bình luận + lọc cộng tác)
--- Chạy: powershell -ExecutionPolicy Bypass -File tools/supabase_psql.ps1 -v ON_ERROR_STOP=1 -f db/schema.sql
+-- Chạy: powershell -ExecutionPolicy Bypass -File tools/local_db.ps1 -Action migrate
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS moderation_audits (
     id          BIGSERIAL PRIMARY KEY,
     comment_id  VARCHAR(100) NOT NULL REFERENCES comments(id) ON DELETE RESTRICT,
     user_name   VARCHAR(60) NOT NULL,
-    action      VARCHAR(30) NOT NULL,              -- 'exclude' | 'restore' | 'approve' | 'promote' | 'exclude_cascade' | 'force_*'
+    action      VARCHAR(30) NOT NULL,              -- 'exclude' | 'restore' | 'approve' | 'unreview' | 'promote' | 'exclude_cascade' | 'force_*'
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     cause_id    VARCHAR(100)                       -- exclude_cascade: bình luận cha gây ra thao tác lan
 );

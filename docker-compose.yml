@@ -1,0 +1,26 @@
+# Postgres local cho ThreadsToxic (thay cho Supabase). Chỉ lắng nghe trên 127.0.0.1.
+# Khởi động: powershell -ExecutionPolicy Bypass -File tools\local_db.ps1 up
+# POSTGRES_PASSWORD lấy từ .env ở gốc repo (Docker Compose tự đọc file này).
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: threads-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: threads_toxic
+      POSTGRES_USER: threads
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Đặt POSTGRES_PASSWORD trong .env}
+    ports:
+      # 5432 đang bị dự án khác dùng trên máy này, nên đặt ở 5433
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - threads_pgdata:/var/lib/postgresql/data
+      - ./db:/db:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U threads -d threads_toxic"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  threads_pgdata:

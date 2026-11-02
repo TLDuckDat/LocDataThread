@@ -8,7 +8,7 @@ using ThreadsToxic.Web.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Chạy trên máy: lấy chuỗi kết nối Supabase từ .env. Khi deploy, đặt biến môi trường ConnectionStrings__Default.
+// Chạy trên máy: lấy chuỗi kết nối Postgres local từ .env. Khi chạy ở nơi khác, đặt biến môi trường ConnectionStrings__Default.
 if (builder.Environment.IsDevelopment())
     DotEnv.AddTo(builder.Configuration, builder.Environment.ContentRootPath);
 
@@ -16,7 +16,7 @@ var connectionString = builder.Configuration.GetConnectionString("Default");
 if (string.IsNullOrWhiteSpace(connectionString))
     throw new InvalidOperationException(
         "Thiếu ConnectionStrings:Default. Chạy trên máy: thêm dòng ConnectionStrings__Default vào .env ở gốc repo. " +
-        "Khi deploy: đặt biến môi trường ConnectionStrings__Default.");
+        "Khi chạy ở nơi khác: đặt biến môi trường ConnectionStrings__Default.");
 
 // Lắng nghe mọi địa chỉ để các máy trong mạng LAN cùng vào được.
 // Railway (và đa số PaaS) cấp cổng qua biến môi trường PORT.
@@ -29,7 +29,7 @@ dataSourceBuilder.EnableDynamicJson(jsonbClrTypes: [typeof(CommentAnalysis)]);
 var dataSource = dataSourceBuilder.Build();
 
 // Factory (kèm AppDbContext scoped như AddDbContext): endpoint đọc tạo DbContext riêng cho từng truy vấn
-// để chạy song song, vì mỗi lượt đi về Supabase mất vài trăm ms.
+// để các truy vấn chạy song song trên các kết nối khác nhau.
 builder.Services.AddDbContextFactory<AppDbContext>(options =>
     options.UseNpgsql(dataSource)
            .UseSnakeCaseNamingConvention());

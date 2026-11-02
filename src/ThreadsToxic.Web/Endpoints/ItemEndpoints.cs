@@ -10,7 +10,7 @@ using ThreadsToxic.Web.Services;
 namespace ThreadsToxic.Web.Endpoints;
 
 public record ItemQuery(
-    string? Bucket,      // "active" (mặc định) | "excluded"
+    string? Bucket,      // "todo" (chưa lọc) | "kept" (đã giữ) | "excluded" (đã bỏ) | "active" (mặc định: todo + kept)
     double? MinScore,
     int? ReplyLevel,     // 0..3
     string? Keyword,     // tìm trong nội dung
@@ -51,7 +51,8 @@ public record ItemDto(
 
 // Tên người thao tác lấy từ phiên phía server (header X-Session-Token), không nhận từ body.
 // Force = true: vượt qua khóa của người khác (được ghi audit với action có tiền tố "force_").
-public record BucketCounts(int Active, int Excluded);
+// Active = Todo + Kept. Todo: đang lọc, chưa ai xử lý. Kept: đang lọc, đã có người giữ lại (hoặc khôi phục).
+public record BucketCounts(int Active, int Excluded, int Todo = 0, int Kept = 0);
 
 // WithAncestors = true (khôi phục): khôi phục kèm cha/ông đang ở "Đã loại" thay vì bị chặn.
 public record MoveRequest(List<string> Ids, bool ToExcluded, bool Force = false, bool WithAncestors = false);
@@ -81,6 +82,7 @@ public static class ItemEndpoints
         group.MapPost("/move", MoveAsync);
         group.MapPost("/undo", UndoAsync);
         group.MapPost("/approve", ApproveAsync);
+        group.MapPost("/unreview", UnreviewAsync);
         group.MapGet("/progress", ProgressAsync);
     }
 
@@ -124,8 +126,12 @@ public static class ItemEndpoints
     // me: tên người gọi (cho Assigned=me)
     private static IQueryable<Comment> Filter(AppDbContext db, ItemQuery q, string? me)
     {
-        var excluded = string.Equals(q.Bucket, "excluded", StringComparison.OrdinalIgnoreCase);
-        var query = db.Comments.AsNoTracking().Where(c => c.IsExcluded == excluded);
+        var bucket = (q.Bucket ?? "").Trim().ToLowerInvariant();
+        var query = db.Comments.AsNoTracking().Where(c => c.IsExcluded == (bucket == "excluded"));
+        if (bucket == "todo")
+            query = query.Where(c => c.ReviewedBy == null);
+        else if (bucket == "kept")
+            query = query.Where(c => c.ReviewedBy != null);
 
         if (q.MinScore is { } minScore)
             query = query.Where(c => c.ToxicScore >= minScore);
@@ -193,13 +199,17 @@ public static class ItemEndpoints
     private static async Task<BucketCounts> GetCountsAsync(AppDbContext db, CancellationToken ct)
     {
         var counts = await db.Comments
-            .GroupBy(c => c.IsExcluded)
-            .Select(g => new { Excluded = g.Key, Count = g.Count() })
+            .GroupBy(c => new { c.IsExcluded, Reviewed = c.ReviewedBy != null })
+            .Select(g => new { g.Key.IsExcluded, g.Key.Reviewed, Count = g.Count() })
             .ToListAsync(ct);
 
+        var todo = counts.Where(x => !x.IsExcluded && !x.Reviewed).Sum(x => x.Count);
+        var kept = counts.Where(x => !x.IsExcluded && x.Reviewed).Sum(x => x.Count);
         return new BucketCounts(
-            Active: counts.FirstOrDefault(x => !x.Excluded)?.Count ?? 0,
-            Excluded: counts.FirstOrDefault(x => x.Excluded)?.Count ?? 0);
+            Active: todo + kept,
+            Excluded: counts.Where(x => x.IsExcluded).Sum(x => x.Count),
+            Todo: todo,
+            Kept: kept);
     }
 
     private static async Task<Results<Ok<object>, BadRequest<string>, UnauthorizedHttpResult, Conflict<string>, JsonHttpResult<string>>> MoveAsync(
@@ -556,7 +566,9 @@ public static class ItemEndpoints
             """).ToListAsync(ct);
     }
 
-    // Khôi phục cả tập (dùng cho hoàn tác): bình luận được chọn ghi "restore", phần kéo theo ghi kèm cause_id cũ
+    // Khôi phục cả tập (dùng cho hoàn tác): bình luận được chọn ghi "restore", phần kéo theo ghi kèm cause_id cũ.
+    // Trạng thái xử lý về đúng như trước lần loại (Chưa lọc hoặc Đã giữ của người cũ): dòng bị loại theo cha
+    // giữ nguyên reviewed_by (lần loại đó không đổi nó); dòng bị loại trực tiếp lấy lại từ audit trước lần loại.
     private static async Task<MoveOutcome> RestoreAllAsync(
         AppDbContext db, string[] ids, string[] selected, string userName, CancellationToken ct)
     {
@@ -565,11 +577,26 @@ public static class ItemEndpoints
             """).ToListAsync(ct);
 
         var changedAll = await db.Database.SqlQuery<string>($"""
-            UPDATE comments
+            UPDATE comments c
             SET is_excluded = FALSE, excluded_by = NULL, excluded_at = NULL,
-                reviewed_by = {userName}, reviewed_at = NOW()
-            WHERE id = ANY({ids}) AND is_excluded = TRUE
-            RETURNING id
+                reviewed_by = CASE WHEN last_ex.action = 'exclude_cascade' THEN c.reviewed_by ELSE prev.reviewer END,
+                reviewed_at = CASE WHEN last_ex.action = 'exclude_cascade' THEN c.reviewed_at ELSE prev.at END
+            FROM unnest({ids}) AS x(id)
+            LEFT JOIN LATERAL (
+                SELECT e.id, e.action FROM moderation_audits e
+                WHERE e.comment_id = x.id AND e.action IN ('exclude', 'force_exclude', 'exclude_cascade')
+                ORDER BY e.id DESC LIMIT 1
+            ) last_ex ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT CASE WHEN a.action = 'unreview' THEN NULL ELSE a.user_name END AS reviewer,
+                       CASE WHEN a.action = 'unreview' THEN NULL ELSE a.created_at END AS at
+                FROM moderation_audits a
+                WHERE a.comment_id = x.id AND a.id < last_ex.id
+                  AND a.action IN ('approve', 'restore', 'force_restore', 'unreview')
+                ORDER BY a.id DESC LIMIT 1
+            ) prev ON TRUE
+            WHERE c.id = x.id AND c.is_excluded = TRUE
+            RETURNING c.id
             """).ToListAsync(ct);
 
         if (changedAll.Count > 0)
@@ -636,6 +663,58 @@ public static class ItemEndpoints
             approved = approved.Count,
             approvedIds = approved,
             skipped = ids.Length - approved.Count,
+        });
+    }
+
+    // Đưa về "Chưa lọc": bỏ dấu đã xử lý của bình luận đang lọc (sửa lỡ tay bấm Giữ lại).
+    // Thành viên chỉ đưa về được bình luận do chính mình xử lý; admin đưa về được mọi bình luận.
+    private static async Task<Results<Ok<object>, BadRequest<string>, UnauthorizedHttpResult>> UnreviewAsync(
+        ApproveRequest req,
+        [FromHeader(Name = SessionHeader)] string? sessionToken,
+        AppDbContext db,
+        IHubContext<CollabHub> hub,
+        CollabState state,
+        CancellationToken ct)
+    {
+        var session = state.ResolveSession(sessionToken);
+        if (session is null)
+            return TypedResults.Unauthorized();
+        var userName = session.UserName;
+
+        var ids = (req.Ids ?? new()).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().ToArray();
+        if (ids.Length is 0)
+            return TypedResults.BadRequest("Chưa chọn bình luận nào.");
+        if (ids.Length > MaxMoveBatch)
+            return TypedResults.BadRequest($"Mỗi lần chỉ thao tác tối đa {MaxMoveBatch} bình luận.");
+
+        var isAdmin = session.IsAdmin;
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var reset = await db.Database.SqlQuery<string>($"""
+            UPDATE comments
+            SET reviewed_by = NULL, reviewed_at = NULL
+            WHERE id = ANY({ids}) AND is_excluded = FALSE AND reviewed_by IS NOT NULL
+              AND ({isAdmin} OR reviewed_by = {userName})
+            RETURNING id
+            """).ToListAsync(ct);
+
+        if (reset.Count > 0)
+        {
+            var resetArray = reset.ToArray();
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO moderation_audits (comment_id, user_name, action)
+                SELECT x, {userName}, 'unreview' FROM unnest({resetArray}) AS x
+                """, ct);
+        }
+        await tx.CommitAsync(ct);
+
+        if (reset.Count > 0)
+            await hub.Clients.Group(CollabHub.Room).SendAsync("ItemsReviewed", new { ids = reset, by = userName, unreview = true }, ct);
+
+        return TypedResults.Ok<object>(new
+        {
+            reset = reset.Count,
+            resetIds = reset,
+            skipped = ids.Length - reset.Count,
         });
     }
 

@@ -279,7 +279,7 @@ def test_retry_once_on_401(browser):
     page.route("**/api/items/move", first_401)
     row(page, "c_01").click()
     page.keyboard.press("x")
-    expect(page.locator(".toast").filter(has_text="Đã loại 1")).to_be_visible(timeout=8000)
+    expect(page.locator(".toast").filter(has_text="Đã bỏ 1")).to_be_visible(timeout=8000)
     check(calls["n"] == 2, f"đúng 2 request move (1 bị 401 + 1 thử lại), thực tế {calls['n']}")
     check(is_excluded("c_01"), "thao tác thành công sau khi thử lại")
     check(audits("c_01") == [("Retry", "exclude")], "audit ghi đúng tên từ phiên mới")
@@ -313,7 +313,7 @@ def test_reconnect_refreshes_token(browser):
 
     row(page, "c_03").click()
     page.keyboard.press("x")
-    expect(page.locator(".toast").filter(has_text="Đã loại 1")).to_be_visible(timeout=8000)
+    expect(page.locator(".toast").filter(has_text="Đã bỏ 1")).to_be_visible(timeout=8000)
     check(401 not in statuses, f"client đã cập nhật token sau reconnect nên không bị 401 ({statuses})")
     check(audits("c_03") == [("Reco", "exclude")], "audit ghi đúng tên sau reconnect")
     check(not errors, f"không có lỗi JS ({errors})")
@@ -349,20 +349,20 @@ def test_locks_force_undo_and_scroll(browser):
     expect(row(minh, "c_13")).to_have_count(0, timeout=8000)
     check(is_excluded("c_13"), "'Vẫn chuyển' vượt khóa thành công")
     check(("Minh", "force_exclude") in audits("c_13"), f"audit đánh dấu force: {audits('c_13')}")
-    expect(lan.locator(".toast").filter(has_text="Minh đã loại 1").last).to_be_visible(timeout=8000)
+    expect(lan.locator(".toast").filter(has_text="Minh đã bỏ 1").last).to_be_visible(timeout=8000)
     check(True, "Lan nhận thông báo real-time")
     row(minh, "c_10").click()   # đổi focus để không giữ khóa c_10 nữa
 
     # --- H5: hoàn tác thao tác của chính mình
-    before = int(lan.locator("#countActive").inner_text().replace(".", ""))
+    before = int(lan.locator("#countTodo").inner_text().replace(".", ""))
     row(lan, "c_11").click()
     lan.keyboard.press("x")
-    undo_toast = lan.locator(".toast").filter(has_text="Đã loại 1").last
+    undo_toast = lan.locator(".toast").filter(has_text="Đã bỏ 1").last
     expect(undo_toast.locator("button", has_text="Hoàn tác")).to_be_visible(timeout=8000)
     expect(row(lan, "c_11")).to_have_count(0, timeout=8000)
     undo_toast.locator("button", has_text="Hoàn tác").click()
     expect(row(lan, "c_11")).to_be_visible(timeout=8000)
-    after = int(lan.locator("#countActive").inner_text().replace(".", ""))
+    after = int(lan.locator("#countTodo").inner_text().replace(".", ""))
     check(not is_excluded("c_11") and after == before, f"hoàn tác đưa trạng thái và số đếm về cũ ({before} -> {after})")
 
     # --- H5: id đã bị người khác thao tác thì bỏ qua và báo
@@ -372,7 +372,7 @@ def test_locks_force_undo_and_scroll(browser):
     row(minh, "c_20").click()
     minh.keyboard.press("x")
     expect(row(minh, "c_20")).to_have_count(0, timeout=8000)
-    minh_toast = minh.locator(".toast").filter(has_text="Đã loại 1").last
+    minh_toast = minh.locator(".toast").filter(has_text="Đã bỏ 1").last
     expect(minh_toast.locator("button", has_text="Hoàn tác")).to_be_visible(timeout=8000)
     with db() as conn, conn.cursor() as cur:   # mô phỏng Lan khôi phục rồi loại lại
         cur.execute("""INSERT INTO moderation_audits (comment_id, user_name, action)
@@ -395,7 +395,7 @@ def test_locks_force_undo_and_scroll(browser):
     above = next(i for i in order[2:] if order.index(i) < order.index(target) and i.startswith("c_"))
     row(lan, above).click()
     lan.keyboard.press("x")
-    expect(minh.locator(".toast").filter(has_text="Lan đã loại 1").last).to_be_visible(timeout=8000)
+    expect(minh.locator(".toast").filter(has_text="Lan đã bỏ 1").last).to_be_visible(timeout=8000)
     expect(row(minh, above)).to_have_count(0, timeout=8000)
     check(order.index(above) < order.index(target), f"dòng bị loại ({above}) nằm phía trên dòng focus ({target})")
     minh.wait_for_timeout(600)
@@ -426,7 +426,7 @@ def test_thread_chain(browser):
     ctx, page, errors = open_as(browser, "Lan")
 
     row(page, "t1").click()
-    check("loại kèm mọi trả lời" in page.locator("#detail").inner_text(), "chi tiết báo loại sẽ kéo theo trả lời")
+    check("bỏ kèm mọi trả lời" in page.locator("#detail").inner_text(), "chi tiết báo bỏ sẽ kéo theo trả lời")
     page.keyboard.press("x")
     expect(page.locator(".toast").filter(has_text="Kèm 1 trả lời")).to_be_visible(timeout=8000)
     check(is_excluded("t1") and is_excluded("t2") and not is_excluded("t0"), "t1 và t2 bị loại, t0 giữ nguyên")
@@ -443,7 +443,7 @@ def test_thread_chain(browser):
     toast.locator("button", has_text="Khôi phục cả chuỗi").click()
     expect(page.locator(".toast").filter(has_text="Kèm 1 bình luận cha")).to_be_visible(timeout=8000)
     check(not is_excluded("t1") and not is_excluded("t2"), "khôi phục cả chuỗi đưa t1, t2 về Đang lọc")
-    page.locator('.tab[data-bucket="active"]').click()
+    page.locator('.tab[data-bucket="todo"]').click()
     check(not errors, f"không có lỗi JS ({errors})")
     ctx.close()
 
@@ -476,10 +476,10 @@ def test_assignment(browser):
     check(lan_count > 10, f"Lan có phần việc chưa làm ({lan_count})")
     minh.locator("#assignClose").click()
 
-    # Lan mở trang: mặc định "Phần của tôi" + "Chưa ai xử lý", sắp theo luồng
+    # Lan mở trang: mặc định tab "Chưa lọc" + "Phần của tôi", sắp theo luồng
     lan_ctx, lan, lan_err = open_as(browser, "Lan")
     check(lan.locator("#assigned").input_value() == "me", "mặc định xem Phần của tôi")
-    check(lan.locator("#review").input_value() == "unreviewed", "mặc định chỉ bình luận chưa xử lý")
+    check(lan.locator(".tab.is-active").get_attribute("data-bucket") == "todo", "mặc định mở tab Chưa lọc")
     expect(lan.locator("#myProgress")).to_contain_text("Phần của tôi: còn", timeout=8000)
     ids = lan.evaluate("[...document.querySelectorAll('#list .row')].map(r => r.dataset.id)")
     mine = {r for (r,) in rows_of("SELECT id FROM comments WHERE assigned_to = 'Lan' AND reviewed_by IS NULL AND NOT is_excluded")}

@@ -23,8 +23,9 @@
   <main class="layout">
     <section class="board" aria-label="Danh sách bình luận">
       <nav class="tabs" role="tablist">
-        <button class="tab is-active" data-bucket="active" role="tab">Đang lọc <b id="countActive">0</b></button>
-        <button class="tab" data-bucket="excluded" role="tab">Đã loại <b id="countExcluded">0</b></button>
+        <button class="tab is-active" data-bucket="todo" role="tab" title="Đang lọc, chưa ai xử lý">⏳ Chưa lọc <b id="countTodo">0</b></button>
+        <button class="tab" data-bucket="kept" role="tab" title="Đã có người bấm Giữ lại: dữ liệu được dùng">✅ Đã giữ <b id="countKept">0</b></button>
+        <button class="tab" data-bucket="excluded" role="tab" title="Đã bỏ khỏi danh sách (khôi phục được)">🗑 Đã bỏ <b id="countExcluded">0</b></button>
       </nav>
 
       <form class="filters" id="filters" autocomplete="off">
@@ -62,11 +63,6 @@
           <option value="non_vietnamese">Lọc trùng · Không phải tiếng Việt</option>
           <option value="meta_ai">Lọc trùng · Meta AI</option>
         </select>
-        <select id="review" aria-label="Trạng thái xử lý">
-          <option value="">Mọi trạng thái xử lý</option>
-          <option value="unreviewed">Chưa ai xử lý</option>
-          <option value="reviewed">Đã có người xử lý</option>
-        </select>
         <input id="reviewedBy" type="search" placeholder="Người đã xử lý…" aria-label="Người đã xử lý">
       </form>
 
@@ -75,7 +71,8 @@
         <span id="selCount" class="muted">Đã chọn 0</span>
         <button id="clearSel" class="btn ghost" type="button">Bỏ chọn</button>
         <button id="approveBtn" class="btn" type="button">Giữ lại ✓ (A)</button>
-        <button id="moveBtn" class="btn primary" type="button">Loại khỏi danh sách</button>
+        <button id="unreviewBtn" class="btn" type="button" hidden>↩ Đưa về Chưa lọc (U)</button>
+        <button id="moveBtn" class="btn primary" type="button">Bỏ (X)</button>
       </div>
 
       <div id="list" class="list" aria-live="polite"></div>
@@ -90,7 +87,7 @@
     <aside class="detail" id="detail" aria-label="Ngữ cảnh bình luận"></aside>
   </main>
 
-  <div class="hotkeys muted">Phím tắt: <kbd>J</kbd>/<kbd>K</kbd> di chuyển · <kbd>Space</kbd> chọn · <kbd>X</kbd> chuyển sang tab còn lại · <kbd>A</kbd> giữ lại</div>
+  <div class="hotkeys muted">Phím tắt: <kbd>J</kbd>/<kbd>K</kbd> di chuyển · <kbd>Space</kbd> chọn · <kbd>A</kbd> giữ lại · <kbd>X</kbd> bỏ / khôi phục · <kbd>U</kbd> đưa về chưa lọc</div>
 
   <div id="assignModal" class="modal" hidden>
     <div class="modal-card assign-card" role="dialog" aria-labelledby="assignTitle">

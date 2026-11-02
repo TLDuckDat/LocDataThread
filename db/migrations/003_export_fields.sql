@@ -8,7 +8,7 @@
 -- Các cột văn bản giữ NULL đúng như nguồn: cách crawler hiển thị giá trị thiếu ("nan") phụ thuộc vào điều đó.
 -- Idempotent: chạy lại nhiều lần an toàn. Sau khi chạy, chạy lại tools/import_comments.py để điền dữ liệu.
 --
--- Chạy: powershell -ExecutionPolicy Bypass -File tools/supabase_psql.ps1 -v ON_ERROR_STOP=1 -f db/migrations/003_export_fields.sql
+-- Chạy: powershell -ExecutionPolicy Bypass -File tools/local_db.ps1 -Action migrate
 
 CREATE TABLE IF NOT EXISTS posts (
     id                  VARCHAR(100) PRIMARY KEY,

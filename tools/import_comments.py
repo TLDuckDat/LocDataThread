@@ -131,7 +131,7 @@ def import_posts(src, pg):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--sqlite", required=True, help="Đường dẫn tới threads_data.db")
-    parser.add_argument("--dsn", help="Chuỗi kết nối PostgreSQL (mặc định: Supabase trong .env)")
+    parser.add_argument("--dsn", help="Chuỗi kết nối PostgreSQL (mặc định: ConnectionStrings__Default trong .env)")
     args = parser.parse_args()
     args.dsn = args.dsn or default_dsn()
 

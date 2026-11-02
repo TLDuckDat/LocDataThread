@@ -3,7 +3,7 @@
     Bật Postgres test trong Docker cho kiểm thử giao diện (tests/ui/e2e.py).
 
 .DESCRIPTION
-    Tạo container threads_toxic_test (cùng major version với Supabase), nạp db/schema.sql rồi
+    Tạo container threads_toxic_test (cùng major version với docker-compose.yml), nạp db/schema.sql rồi
     db/migrations theo thứ tự. Container tự xóa khi dừng: docker stop threads-test-db.
     `dotnet test` không cần script này: test tích hợp tự dựng container riêng.
 

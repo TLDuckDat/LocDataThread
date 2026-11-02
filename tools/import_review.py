@@ -223,7 +223,7 @@ def main():
     parser.add_argument("--review-db", help="Đường dẫn threads_review.db (mặc định: <crawler>/data/threads_review.db)")
     parser.add_argument("--reason", action="append",
                         help="Chỉ nạp lý do này (lặp lại được), vd: duplicate_content, non_vietnamese")
-    parser.add_argument("--dsn", help="Chuỗi kết nối PostgreSQL (mặc định: Supabase trong .env)")
+    parser.add_argument("--dsn", help="Chuỗi kết nối PostgreSQL (mặc định: ConnectionStrings__Default trong .env)")
     parser.add_argument("--dry-run", action="store_true", help="Chỉ đếm, không ghi vào PostgreSQL")
     args = parser.parse_args()
     args.dsn = args.dsn or default_dsn()

@@ -1,8 +1,7 @@
 -- Kiểm tra toàn vẹn chuỗi hội thoại F0..F3 (chỉ đọc). Mọi dòng "violations" phải bằng 0.
 -- Chạy trước khi xuất file, sau khi nạp dữ liệu, hoặc khi nghi ngờ dữ liệu lệch. Cần migration 007.
 --
--- Chạy: psql -d <tên_database> -f db/checks/chain_integrity.sql
---       powershell -ExecutionPolicy Bypass -File tools\supabase_psql.ps1 -f db\checks\chain_integrity.sql
+-- Chạy: powershell -ExecutionPolicy Bypass -File tools/local_db.ps1 -Action check
 
 SELECT 'R1 bản trả lời chưa gắn cha' AS check_name, COUNT(*) AS violations
 FROM comments WHERE reply_level > 0 AND thread_parent_id IS NULL

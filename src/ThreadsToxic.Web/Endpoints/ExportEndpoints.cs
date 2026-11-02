@@ -23,8 +23,8 @@ public static class ExportEndpoints
     // Bên crawler xem trước bằng LIMIT 60 rồi mới lọc, nên mẫu có thể ít hơn 60 dòng
     public const int PreviewLimit = 60;
 
-    // Xuất toàn bộ: tải bình luận theo lô thay vì một truy vấn khổng lồ (dễ bị pooler của Supabase
-    // cắt giữa chừng), vài lô chạy song song để bù độ trễ mỗi lượt đi về database.
+    // Xuất toàn bộ: tải bình luận theo lô thay vì một truy vấn khổng lồ (dễ bị đứt kết nối
+    // giữa chừng và tốn bộ nhớ), vài lô chạy song song để bù độ trễ mỗi lượt đi về database.
     internal const int LoadBatchSize = 2000;
     private const int LoadParallelism = 4;
 

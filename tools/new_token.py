@@ -2,7 +2,10 @@
 
 Chạy:
     python tools/new_token.py --index 0 --name "Đạt" --role admin
-    python tools/new_token.py --index 1 --name "Minh"
+    python tools/new_token.py --index 1 --name "Minh" --out-dir backups/tokens
+
+Với --out-dir, mã được ghi vào <thư mục>/<index>_<tên>.txt, mỗi người một file chỉ có mã của họ,
+nên gửi file nào thì chỉ lộ mã của người đó. Không có --out-dir thì mã in ra màn hình.
 
 In ra:
 - MÃ TRUY CẬP: gửi riêng cho người dùng (họ nhập một lần trên trình duyệt). Không lưu ở đâu khác.
@@ -14,8 +17,10 @@ ngay khi server khởi động lại với cấu hình mới. Gỡ hẳn: xóa 3
 """
 import argparse
 import hashlib
+import re
 import secrets
 import sys
+from pathlib import Path
 
 
 def main():
@@ -23,6 +28,7 @@ def main():
     parser.add_argument("--index", type=int, required=True, help="Số thứ tự người dùng: 0, 1, 2... (không trùng)")
     parser.add_argument("--name", required=True, help="Tên hiển thị, 1-40 ký tự, không trùng người khác")
     parser.add_argument("--role", choices=["admin", "member"], default="member")
+    parser.add_argument("--out-dir", help="Ghi mã vào file riêng của người này trong thư mục này")
     args = parser.parse_args()
 
     name = args.name.strip()
@@ -33,8 +39,16 @@ def main():
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     sys.stdout.reconfigure(encoding="utf-8")
-    print(f"MÃ TRUY CẬP của {name} (gửi riêng cho người đó, chỉ hiện một lần):")
-    print(f"  {token}")
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r'[\\/:*?"<>|\s]', "_", name)
+        path = out_dir / f"{args.index:02d}_{safe_name}.txt"
+        path.write_text(f"Mã truy cập ThreadsToxic của {name}\n\n{token}\n", encoding="utf-8")
+        print(f"Đã ghi mã của {name} vào {path} (chỉ hiện một lần; gửi riêng file này cho người đó).")
+    else:
+        print(f"MÃ TRUY CẬP của {name} (gửi riêng cho người đó, chỉ hiện một lần):")
+        print(f"  {token}")
     print()
     print("Biến môi trường (Railway > Variables, hoặc .env khi chạy local):")
     print(f"Auth__Users__{args.index}__Name={name}")

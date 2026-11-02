@@ -6,7 +6,7 @@
 -- Chỉ dữ liệu đã tính sẵn được lưu (không lưu payload thô của crawler).
 -- Idempotent: chạy lại nhiều lần an toàn.
 --
--- Chạy: powershell -ExecutionPolicy Bypass -File tools/supabase_psql.ps1 -v ON_ERROR_STOP=1 -f db/migrations/004_review_queue.sql
+-- Chạy: powershell -ExecutionPolicy Bypass -File tools/local_db.ps1 -Action migrate
 
 ALTER TABLE comments ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(60);
 ALTER TABLE comments ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;

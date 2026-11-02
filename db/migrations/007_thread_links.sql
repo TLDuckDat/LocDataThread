@@ -15,7 +15,7 @@
 --
 -- Idempotent. Dừng (không đổi gì) nếu còn bản trả lời không xác định được đúng một cha.
 --
--- Chạy: psql -h localhost -U postgres -d <tên_database> -v ON_ERROR_STOP=1 -f db/migrations/007_thread_links.sql
+-- Chạy: powershell -ExecutionPolicy Bypass -File tools/local_db.ps1 -Action migrate
 
 ALTER TABLE comments ADD COLUMN IF NOT EXISTS thread_parent_id VARCHAR(100);
 ALTER TABLE comments ADD COLUMN IF NOT EXISTS thread_root_id   VARCHAR(100);

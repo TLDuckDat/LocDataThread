@@ -54,15 +54,31 @@
     });
   }
 
+  // Lý do phải nhập lại mã, giữ qua lần tải lại trang của signOut(reason); xóa khi đã nhập mã mới
+  const REASON_KEY = "threads-toxic-signout-reason";
+
   async function ensure(message) {
-    return get() || ask(message);
+    const token = get();
+    if (token) return token;
+    let reason = null;
+    try { reason = sessionStorage.getItem(REASON_KEY); } catch { /* bỏ qua */ }
+    const value = await ask(message || reason);
+    try { sessionStorage.removeItem(REASON_KEY); } catch { /* bỏ qua */ }
+    return value;
   }
 
   const headers = (extra = {}) => ({ "X-Access-Token": get() || "", ...extra });
 
-  // Quên mã trên máy này (vd đổi người dùng) rồi tải lại trang để nhập mã mới
-  function signOut() {
+  // Quên mã trên máy này (vd đổi người dùng) rồi tải lại trang để nhập mã mới.
+  // Nhiều request cùng bị 401 chỉ tải lại một lần.
+  let signingOut = false;
+  function signOut(reason) {
     clear();
+    if (reason) {
+      try { sessionStorage.setItem(REASON_KEY, reason); } catch { /* bỏ qua */ }
+    }
+    if (signingOut) return;
+    signingOut = true;
     location.reload();
   }
 

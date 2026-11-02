@@ -1,9 +1,15 @@
 # ThreadsToxic — Lọc cộng tác thời gian thực
 
-Nhiều người (2–4+) cùng lọc một danh sách bình luận Threads. Mỗi bình luận nằm trong một trong hai mục:
+Nhiều người (đã thử với 5 người trên ~48 nghìn bình luận) cùng lọc một danh sách bình luận Threads.
+Mỗi bình luận nằm ở đúng một trong ba tab, mỗi tab có số đếm riêng và mỗi dòng có nhãn trạng thái kèm tên người xử lý:
 
-- **Đang lọc**: danh sách chung, ai cũng thấy.
-- **Đã loại**: bình luận bị loại khỏi danh sách nhưng vẫn còn trong cơ sở dữ liệu, có thể khôi phục.
+| Tab | Nghĩa | Vào bằng |
+| --- | --- | --- |
+| **⏳ Chưa lọc** | Chưa ai xử lý | Mặc định khi nạp; **Đưa về Chưa lọc** (`U`) |
+| **✅ Đã giữ** | Có người đã duyệt, dữ liệu được dùng | **Giữ lại** (`A`); **Khôi phục** từ Đã bỏ |
+| **🗑 Đã bỏ** | Bị bỏ (kể cả bỏ theo cha), vẫn còn trong database, khôi phục được | **Bỏ** (`X`) |
+
+"Đang lọc" trong tài liệu dưới đây là Chưa lọc + Đã giữ (mọi bình luận chưa bị bỏ).
 
 Mọi thao tác được đồng bộ ngay trên các máy khác qua SignalR. Khi một người bấm xem một bình luận, người khác thấy ổ khóa kèm tên và server từ chối cho họ loại bình luận đó (admin có thể chủ động chọn "Vẫn chuyển").
 
@@ -11,43 +17,69 @@ Mọi thao tác được đồng bộ ngay trên các máy khác qua SignalR. Kh
 - **Chia việc**: admin chia theo bài viết, mỗi người mở app là thấy "Phần của tôi" (xem [Chia việc](#chia-việc)).
 - **Chuỗi hội thoại F0 → F3 luôn liền mạch**: loại một bình luận thì mọi trả lời bên dưới bị loại theo (xem [Chuỗi hội thoại](#chuỗi-hội-thoại-f0--f3)).
 
-Lọc xong, trang **📥 Xuất Excel & CSV** (`/export.html`) xuất danh sách "Đang lọc" ra file (xem [Xuất Excel & CSV](#xuất-excel--csv)). Bình luận đã có người xử lý có thể lọc riêng để xuất.
+Lọc xong, trang **📥 Xuất Excel & CSV** (`/export.html`) xuất danh sách "Đang lọc" ra file (xem [Xuất Excel & CSV](#xuất-excel--csv)). Chọn "chỉ đã xử lý" để chỉ xuất tab **Đã giữ**.
 
 ## Yêu cầu
 
 - .NET 10 SDK
-- Database: PostgreSQL trên [Supabase](https://supabase.com) (region Tokyo). Không cần cài Postgres server trên máy
-- Công cụ dòng lệnh `psql` / `pg_dump` 17+ (áp dụng migration, sao lưu)
-- Docker Desktop (chỉ để chạy test: test tự dựng Postgres tạm trong container)
+- Docker Desktop: chạy Postgres local (`docker-compose.yml`) và test tích hợp
 - Python 3 + `psycopg2` (nạp dữ liệu và chạy kiểm thử giao diện)
 - Node 20+ (chỉ để chạy test của `util.js`)
+- `cloudflared` (tùy chọn, để đưa app ra internet, xem [Deploy](#deploy))
 
 ### File `.env`
 
-Thông tin kết nối và khóa Supabase nằm trong `.env` ở gốc repo (đã gitignore, **không commit**). Chép `.env.example` thành `.env` rồi điền:
+Cấu hình chạy trên máy nằm trong `.env` ở gốc repo (đã gitignore, **không commit**). Chép `.env.example` thành `.env` rồi điền:
 
-- `SUPABASE_DB_HOST`, `SUPABASE_DB_USER`, `SUPABASE_DB_PASSWORD`: trên dashboard, **Connect > Direct > Session pooler** (IPv4). Mật khẩu đặt lại ở **Project Settings > Database**.
-- `ConnectionStrings__Default`: chuỗi kết nối Npgsql cho app, dạng `Host=...;Port=5432;Database=postgres;Username=postgres.<ref>;Password=...;SSL Mode=Require;Maximum Pool Size=15`.
+- `POSTGRES_PASSWORD`: mật khẩu của Postgres trong Docker. Tự đặt, và dùng cùng mật khẩu trong `ConnectionStrings__Default`.
+- `ConnectionStrings__Default`: chuỗi kết nối Npgsql. Mặc định: `Host=127.0.0.1;Port=5433;Database=threads_toxic;Username=threads;Password=<mật khẩu>;Maximum Pool Size=20`.
+- `Auth__Users__*`: tài khoản (xem [Tài khoản](#tài-khoản-và-mã-truy-cập)).
+- `CLOUDFLARE_TUNNEL_TOKEN`: tùy chọn, tunnel cố định (xem [Deploy](#deploy)).
 
-App (khi chạy ở môi trường Development), các script Python trong `tools/` và các script `tools/supabase_*.ps1` đều đọc từ file này.
+App (khi chạy ở môi trường Development), các script Python trong `tools/` và `docker compose` đều đọc từ file này.
 
 ## Thiết lập lần đầu
 
-Database Supabase hiện tại đã có đủ bảng và dữ liệu. Các bước dưới chỉ dùng khi dựng một project Supabase mới (đã điền `.env`):
+Postgres chạy trong Docker, dữ liệu nằm trong volume `threads_pgdata` (dừng container không mất dữ liệu). Chỉ lắng nghe trên `127.0.0.1:5433` (cổng 5432 thường đã có dự án khác dùng).
 
 ```powershell
-# 1. Tạo bảng, áp dụng migration, chặn Data API
-powershell -ExecutionPolicy Bypass -File tools/supabase_psql.ps1 -v ON_ERROR_STOP=1 -f db/schema.sql
-Get-ChildItem db/migrations/*.sql | Sort-Object Name | ForEach-Object {
-    powershell -ExecutionPolicy Bypass -File tools/supabase_psql.ps1 -v ON_ERROR_STOP=1 -f $_.FullName }
-powershell -ExecutionPolicy Bypass -File tools/supabase_psql.ps1 -v ON_ERROR_STOP=1 -f db/supabase_lockdown.sql
+# 1. Bật Docker Desktop, rồi bật Postgres
+powershell -ExecutionPolicy Bypass -File tools\local_db.ps1 -Action up
 
-# 2. Nạp bình luận từ SQLite của crawler (idempotent, chạy lại an toàn)
+# 2. Tạo bảng và áp dụng mọi migration (chạy lại an toàn)
+powershell -ExecutionPolicy Bypass -File tools\local_db.ps1 -Action migrate
+
+# 3. Nạp bình luận từ SQLite của crawler (idempotent, chạy lại an toàn)
 python tools/import_comments.py --sqlite "<đường dẫn>\crawlDataThreads\crawlDataThreads\data\threads_data.db"
 
-# 3. (Tùy chọn) Nạp thêm bình luận từ hàng chờ lọc trùng để lọc lại sau
+# 4. (Tùy chọn) Nạp thêm bình luận từ hàng chờ lọc trùng để lọc lại sau
 python tools/import_review.py --crawler "<đường dẫn>\crawlDataThreads\crawlDataThreads"
 ```
+
+### Nạp từ file CSV (thay cho bước 3)
+
+File CSV theo định dạng của trang xuất (cột `Bài viết, f0, f1, f2, Nội dung`) nạp được bằng `tools/import_csv.py`. Mọi bình luận vào tab **Chưa lọc**.
+
+```powershell
+python tools/import_csv.py --csv "<đường dẫn>\data.csv" --dry-run   # xem trước số lượng, không ghi gì
+python tools/import_csv.py --csv "<đường dẫn>\data.csv"
+```
+
+- CSV không có id: `post_id` và `id` được băm từ nội dung (tiền tố `csv-`), nên chạy lại an toàn (bình luận đã có giữ nguyên trạng thái lọc).
+- Cấp F suy từ chuỗi: "Nội dung" bằng ô F cuối cùng không rỗng thì đó là chính bình luận, khác thì là trả lời cấp kế tiếp (F3).
+- Cha chỉ có trong ô F của dòng con được dựng lại để chuỗi liền mạch; dòng có chuỗi đứt (vd có f2 nhưng f1 rỗng) bị bỏ qua và liệt kê.
+- Dòng không có bài viết: mỗi luồng F0 thành một bài riêng, để chia việc không dồn vào một người.
+- Script từ chối chạy nếu database đã có bình luận từ nguồn khác (tránh trùng nội dung); thêm `--allow-mixed` nếu chắc chắn.
+
+### Khôi phục dữ liệu từ bản sao lưu
+
+Dữ liệu đã chuyển từ Supabase sang đây từ `backups/supabase_20261029_212657.dump`. Để dựng lại từ một bản sao lưu, bắt đầu từ database trống (`up`, `migrate`), rồi:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\local_db.ps1 -Action restore -File backups\<file>.dump
+```
+
+`restore` chỉ nạp dữ liệu vào schema từ migration, và từ chối chạy nếu database đã có bình luận.
 
 ### Nạp từ hàng chờ lọc trùng (`threads_review.db`) vào Kho phụ
 
@@ -63,19 +95,17 @@ Dữ liệu cũ (nạp thẳng vào "Đang lọc" theo bản trước) không c�
 
 ### Database đã có từ trước: áp dụng migration
 
-`db/schema.sql` chỉ dùng cho database mới. Thay đổi schema về sau là một file mới trong `db/migrations/` (idempotent), chạy trên Supabase theo thứ tự:
+`db/schema.sql` là schema đầy đủ cho database mới. `local_db.ps1 -Action migrate` chạy `schema.sql` rồi mọi file trong `db/migrations/` theo thứ tự tên, nên thay đổi schema về sau chỉ cần thêm một file mới (idempotent) rồi chạy lại `migrate`. Sao lưu trước khi đổi schema:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/supabase_backup.ps1   # sao lưu trước
-powershell -ExecutionPolicy Bypass -File tools/supabase_psql.ps1 -v ON_ERROR_STOP=1 -f db/migrations/00X_ten.sql
-# Migration tạo bảng mới: chạy lại để bật RLS cho bảng đó
-powershell -ExecutionPolicy Bypass -File tools/supabase_psql.ps1 -v ON_ERROR_STOP=1 -f db/supabase_lockdown.sql
+powershell -ExecutionPolicy Bypass -File tools\local_db.ps1 -Action backup
+powershell -ExecutionPolicy Bypass -File tools\local_db.ps1 -Action migrate
 
 # Sau 003: chạy lại import để điền bảng posts và các cột phục vụ xuất file
 python tools/import_comments.py --sqlite "<đường dẫn>\crawlDataThreads\crawlDataThreads\data\threads_data.db"
 
 # Sau 007: kiểm tra toàn vẹn chuỗi F (mọi dòng phải bằng 0)
-powershell -ExecutionPolicy Bypass -File tools/supabase_psql.ps1 -f db/checks/chain_integrity.sql
+powershell -ExecutionPolicy Bypass -File tools\local_db.ps1 -Action check
 ```
 
 | Migration | Tác dụng |
@@ -89,7 +119,6 @@ powershell -ExecutionPolicy Bypass -File tools/supabase_psql.ps1 -f db/checks/ch
 | `007_thread_links.sql` | Liên kết cha-con (`thread_parent_id`, `thread_root_id`) tính từ chuỗi F, trigger tự gắn cha và ràng buộc "cha bị loại thì con bị loại" (kiểm tra lúc commit). Tự sửa vi phạm có sẵn (con đang lọc dưới cha đã loại -> loại theo, người thao tác `system`). Dừng nếu có bản trả lời không xác định được đúng một cha |
 | `008_assignment.sql` | Cột `comments.assigned_to` cho chia việc |
 
-`db/supabase_lockdown.sql` (chỉ cho Supabase) bật RLS và thu quyền `anon`/`authenticated` trên mọi bảng, kể cả bảng tạo về sau, để publishable key không đọc/ghi được dữ liệu qua Data API. App kết nối bằng chủ sở hữu bảng nên không bị chặn.
 
 ## Chạy
 
@@ -100,7 +129,7 @@ dotnet run
 
 Mở `http://localhost:5000`. Các máy khác trong cùng mạng LAN mở `http://<IP-máy-chủ>:5000`. Lần đầu có thể cần cho phép cổng 5000 trong Windows Firewall.
 
-App kết nối tới Supabase bằng `ConnectionStrings__Default` trong `.env` (chỉ đọc `.env` ở môi trường Development). Biến môi trường cùng tên luôn được ưu tiên hơn `.env`. Thiếu chuỗi kết nối thì app dừng ngay khi khởi động. Đổi cổng bằng `--urls`.
+App kết nối tới Postgres local bằng `ConnectionStrings__Default` trong `.env` (chỉ đọc `.env` ở môi trường Development). Biến môi trường cùng tên luôn được ưu tiên hơn `.env`. Thiếu chuỗi kết nối thì app dừng ngay khi khởi động. Đổi cổng bằng `--urls`.
 
 App cũng **không khởi động** nếu chưa cấu hình tài khoản (để không chạy mở cho mọi người), xem mục dưới.
 
@@ -115,23 +144,35 @@ python tools/new_token.py --index 2 --name "Lan"
 # ...
 ```
 
-Mỗi lệnh in ra **mã** (gửi riêng cho người đó, chỉ hiện một lần) và 3 dòng `Auth__Users__<n>__Name/Role/TokenSha256`: dán vào Railway > Variables, hoặc vào `.env` khi chạy local.
+Mỗi lệnh in ra **mã** (gửi riêng cho người đó, chỉ hiện một lần) và 3 dòng `Auth__Users__<n>__Name/Role/TokenSha256`: dán vào `.env` (khi chạy ở nơi khác, đặt thành biến môi trường cùng tên).
+
+Thêm `--out-dir backups/tokens` để mã được ghi vào file riêng `<index>_<tên>.txt` (chỉ có mã của người đó) thay vì in ra màn hình. Gửi đúng file của ai thì chỉ lộ mã của người đó.
 
 - Người dùng nhập mã một lần trên mỗi trình duyệt; nút **Đổi mã** để quên mã trên máy đó.
 - Tên và vai trò lấy theo mã, không tự khai được. `admin`: chia việc, "Vẫn chuyển" (vượt khóa), thao tác hàng loạt ở Kho phụ. `member`: còn lại.
 - Đổi / thu hồi mã: chạy lại `new_token.py` với cùng `--index` và thay dòng `TokenSha256` (hoặc xóa 3 dòng), mã cũ hết hiệu lực khi server khởi động lại.
 
-### Deploy
+### Deploy: máy này làm máy chủ (Cloudflare Tunnel)
 
-Supabase chỉ đóng vai trò database; app (.NET + SignalR) chạy trên [Railway](https://railway.com) bằng `Dockerfile` và `railway.json` ở gốc repo.
+App và database chạy trên máy này. [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/) mở một kết nối đi ra từ máy tới Cloudflare, nên không cần mở cổng trên router. Máy phải bật và đang chạy app thì người khác mới vào được.
 
-1. Railway: **New Project > Deploy from GitHub repo**, chọn repo này (nhánh `main`). Railway tự build theo `Dockerfile`.
-2. Tab **Variables** của service: thêm `ConnectionStrings__Default` = giá trị cùng tên trong `.env`, và các dòng `Auth__Users__*` (xem [Tài khoản](#tài-khoản-và-mã-truy-cập)). Không cần đặt `PORT`: Railway tự cấp, app tự đọc.
-3. Tab **Settings > Networking > Generate Domain** để có địa chỉ công khai. Nên chọn region gần Tokyo (Southeast Asia) cho gần Supabase.
+1. Bật database và app (hai cửa sổ PowerShell):
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File tools\local_db.ps1 -Action up
+   cd src\ThreadsToxic.Web
+   dotnet run
+   ```
+   App lắng nghe `0.0.0.0:5000`.
+2. Đưa ra internet:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File tools\tunnel.ps1
+   ```
+   - **Không có `CLOUDFLARE_TUNNEL_TOKEN`**: tunnel tạm, in ra địa chỉ `https://<ngẫu nhiên>.trycloudflare.com`. Không cần tài khoản, nhưng địa chỉ đổi mỗi lần chạy.
+   - **Có `CLOUDFLARE_TUNNEL_TOKEN`**: địa chỉ cố định trên tên miền của bạn. Trên [Cloudflare Zero Trust](https://one.dash.cloudflare.com) > Networks > Tunnels > Create a tunnel (Cloudflared), sao chép token vào `.env`, rồi thêm **Public hostname** trỏ tới `http://localhost:5000`. Tên miền phải được quản lý trên Cloudflare.
+3. Tùy chọn: bật Cloudflare Access (Zero Trust > Access > Applications) cho hostname đó để có thêm một lớp đăng nhập trước khi vào app.
 
-- Khi deploy app không đọc `.env` (chỉ đọc ở môi trường Development); image Docker không chứa `.env` (xem `.dockerignore`).
-- Chỉ chạy một instance (`numReplicas: 1` trong `railway.json`) vì khóa và phiên nằm trong bộ nhớ; Railway hỗ trợ WebSocket cho SignalR.
-- Thử image trên máy: `docker build -t locdatathread .` rồi `docker run -p 8080:8080 -e "ConnectionStrings__Default=..." locdatathread`.
+- Chỉ chạy một tiến trình app: khóa và phiên nằm trong bộ nhớ.
+- `Dockerfile` vẫn build được image của app để chạy ở nơi khác; image không chứa `.env`.
 
 ### Bảo vệ bí mật khi commit
 
@@ -140,15 +181,16 @@ Supabase chỉ đóng vai trò database; app (.NET + SignalR) chạy trên [Rail
 ```powershell
 git config core.hooksPath .githooks
 ```
-- Gói Free của Supabase: 500 MB, tự tạm dừng sau 7 ngày không hoạt động, giới hạn 60 kết nối (vì vậy `Maximum Pool Size=15`).
 
 ### Sao lưu
 
-Gói Free không có backup tự động. Sao lưu về `backups/` (gitignore):
+Dữ liệu nằm trong volume Docker, nên cần sao lưu định kỳ về `backups/` (gitignore):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/supabase_backup.ps1
+powershell -ExecutionPolicy Bypass -File tools\local_db.ps1 -Action backup
 ```
+
+Khôi phục: xem [Khôi phục dữ liệu từ bản sao lưu](#khôi-phục-dữ-liệu-từ-bản-sao-lưu).
 
 ### Cấu hình khóa
 
@@ -164,10 +206,11 @@ powershell -ExecutionPolicy Bypass -File tools/supabase_backup.ps1
 | --- | --- |
 | `J` / `K` | Xem bình luận kế tiếp / trước đó |
 | `Space` | Chọn / bỏ chọn bình luận đang xem |
-| `X` | Chuyển bình luận (hoặc các bình luận đã chọn) sang tab còn lại |
-| `A` | Giữ lại (đánh dấu đã xử lý, vẫn ở "Đang lọc") |
+| `A` | Giữ lại: Chưa lọc → Đã giữ |
+| `X` | Bỏ (Chưa lọc / Đã giữ → Đã bỏ); ở tab Đã bỏ: khôi phục → Đã giữ |
+| `U` | Ở tab Đã giữ: đưa về Chưa lọc (thành viên chỉ đưa về được bình luận do mình giữ, admin đưa về được mọi bình luận) |
 
-Sau khi giữ lại hoặc loại bình luận đang xem, app tự chuyển sang bình luận kế tiếp. Sau mỗi lần chuyển, thông báo có nút **Hoàn tác** trong 8 giây. Nếu có bình luận đang bị đồng đội xem, admin thấy thêm nút **Vẫn chuyển**.
+Sau khi giữ lại hoặc bỏ bình luận đang xem, app tự chuyển sang bình luận kế tiếp. Sau mỗi lần giữ / bỏ, thông báo có nút **Hoàn tác** trong 8 giây; hoàn tác một lần bỏ đưa từng bình luận về đúng tab trước đó (Chưa lọc hoặc Đã giữ của người cũ). Nếu có bình luận đang bị đồng đội xem, admin thấy thêm nút **Vẫn chuyển**.
 
 ## Chia việc
 
@@ -252,7 +295,8 @@ Mọi endpoint `/api` cần xác thực, không có thì `401`:
 | Endpoint | Mô tả |
 | --- | --- |
 | `GET /api/items` | Lọc: `bucket`, `minScore`, `replyLevel`, `keyword`, `word`, `source` (`main` \| `review` \| lý do cụ thể), `review` (`unreviewed` \| `reviewed`), `reviewedBy`, `assigned` (`me` \| `none` \| tên), `order` (`thread`: theo luồng; trống: điểm giảm dần), `page`, `pageSize`. Trả `total`, `items`, `counts` |
-| `GET /api/items/counts` | `{ active, excluded }` |
+| `GET /api/items` | `bucket`: `todo` (Chưa lọc) \| `kept` (Đã giữ) \| `excluded` (Đã bỏ) \| `active` (mặc định: todo + kept), cùng các bộ lọc khác |
+| `GET /api/items/counts` | `{ active, excluded, todo, kept }` (`active` = `todo` + `kept`) |
 | `POST /api/items/move` | Body `{ ids, toExcluded, force?, withAncestors? }`. Trả `{ moved, movedIds, skipped, locked, cascaded, restoredAncestors, blocked, blockingAncestors }`. Loại thì kéo theo con cháu (`cascaded`); khôi phục khi cha/ông còn bị loại thì nằm trong `blocked`, trừ khi `withAncestors: true`. Bình luận (hoặc nhánh) đang bị người **khác** giữ khóa còn hạn không bị đổi và nằm trong `locked`; `force: true` (chỉ admin, nếu không `403`) vượt khóa và ghi audit `force_exclude` / `force_restore`. Thiếu hoặc sai token: `401`. Bị người khác thao tác chen ngang làm sai chuỗi: `409` |
 | `GET /api/export/curated` | Xem trước (60 dòng): `status` (`all` \| `bad` \| `ambiguous` \| `clean`), `type` (`all` \| `root` \| `reply`), `minLength` (0–500, mặc định 2), `maxLength` (10–10000, mặc định 300), `dedup` (mặc định `true`), `reviewed` (`true`: chỉ bình luận đã có người xử lý, kèm cả chuỗi cha). Trả `{ columns, rows, previewLimit, brokenChainDropped }` |
 | `GET /api/export/curated/xlsx`, `/csv` | Tải file với cùng tham số, thêm `columns` (lặp lại được, theo thứ tự; trống = tất cả). Trang xuất mặc định chọn 6 cột: Bài viết, f0–f3, Nội dung |
@@ -260,7 +304,8 @@ Mọi endpoint `/api` cần xác thực, không có thì `401`:
 | `GET /api/items/assignments` | Chia việc: `{ unassignedRemaining, longLeaves, people: [{ name, assigned, done, remaining }] }` |
 | `POST /api/admin/assign/split` | Chỉ admin. Body `{ members? }` (trống = mọi member). Chia phần chưa giao theo bài viết, trả tổng quan như trên |
 | `POST /api/admin/assign/transfer` | Chỉ admin. Body `{ from, to }`. Chuyển phần chưa xử lý của `from` sang `to`, trả `{ moved, summary }` |
-| `POST /api/items/approve` | Body `{ ids }`. Giữ lại: đánh dấu đã duyệt, bình luận vẫn ở "Đang lọc". Ghi audit `approve` |
+| `POST /api/items/approve` | Body `{ ids }`. Giữ lại: Chưa lọc → Đã giữ. Ghi audit `approve` |
+| `POST /api/items/unreview` | Body `{ ids }`. Đã giữ → Chưa lọc; thành viên chỉ với bình luận do mình giữ, admin với mọi bình luận. Trả `{ reset, resetIds, skipped }`, ghi audit `unreview` |
 | `GET /api/review` | Kho phụ: `decision` (`pending` \| `promoted` \| `rejected`), `type`, `reason`, `keyword`, `inMain` (`hide` \| `only` \| `all`), `page`, `pageSize`. Trả `{ total, items, counts }` |
 | `GET /api/review/counts` | Chỉ số đếm của Kho phụ (`counts` ở trên), không tải bản ghi: dùng cho huy hiệu ở trang chính |
 | `POST /api/review/promote`, `/reject`, `/restore` | Body `{ ids }` (tối đa 500). Cần `X-Session-Token`. `restore` chỉ hoàn tác loại do chính người đó thực hiện. `promote` trả thêm `blockedChain`: bản trả lời chưa đưa được vì cha chưa có / đã bị loại |
@@ -271,7 +316,7 @@ Sự kiện SignalR: `PresenceChanged`, `LockSnapshot`, `LockChanged`, `ItemsMov
 
 ## Kiểm thử
 
-Test chạy trên database riêng `threads_toxic_test`, **không bao giờ** chạm `threads_toxic_db` hay Supabase. Fixture dừng ngay nếu chuỗi kết nối không trỏ đúng tên database test.
+Test chạy trên database riêng `threads_toxic_test`, **không bao giờ** chạm vào database `threads_toxic` đang dùng để chạy app. Fixture dừng ngay nếu chuỗi kết nối không trỏ đúng tên database test.
 
 ```powershell
 # Test tích hợp: API + SignalR trong bộ nhớ. Mặc định tự dựng Postgres trong Docker (bật Docker Desktop);
@@ -305,48 +350,23 @@ Các test không chạy song song vì dùng chung một database. Dữ liệu te
 ```
 db/schema.sql                       DDL cho database mới
 db/migrations/                      Thay đổi schema cho database đã có (idempotent)
-db/supabase_lockdown.sql            Chặn Data API của Supabase khỏi bảng của app
-.env.example                        Mẫu file .env (kết nối và khóa Supabase)
-Dockerfile, .dockerignore           Image chạy app (Railway)
-railway.json                        Cấu hình deploy Railway (1 replica, healthcheck)
+db/checks/chain_integrity.sql       Kiểm tra toàn vẹn chuỗi F0..F3 (chỉ đọc)
+.env.example                        Mẫu file .env (Postgres local, tài khoản, tunnel)
+docker-compose.yml                  Postgres local (threads-db, cổng 5433)
+Dockerfile, .dockerignore           Image chạy app (không cần cho Cloudflare Tunnel)
 .githooks/pre-commit                Chặn commit lộ bí mật
-tools/supabase_psql.ps1             psql tới Supabase bằng thông tin trong .env
-tools/supabase_backup.ps1           Sao lưu Supabase về backups/
-tools/supabase_env.ps1              Đọc .env cho hai script trên
+tools/local_db.ps1                  Bật/tắt Postgres, migrate, check, backup, restore, psql
+tools/tunnel.ps1                    Cloudflare Tunnel đưa app ra internet
 tools/start_test_db.ps1             Postgres test trong Docker cho e2e
-tools/db_env.py                     DSN mặc định (Supabase trong .env) cho script Python
+tools/db_env.py                     DSN mặc định (ConnectionStrings__Default trong .env) cho script Python
 tools/import_comments.py            ETL SQLite -> PostgreSQL
 tools/import_review.py              Hàng chờ lọc trùng (threads_review.db) -> Kho phụ (review_queue)
 tools/sync_review_back.py           Ghi ngược quyết định Kho phụ về threads_review.db của crawler
-tools/gen_py_unicode.py             Sinh bảng Unicode của Python cho bản port bộ lọc tiếng Việt
-tools/new_token.py                  Tạo mã truy cập + dòng cấu hình Auth__Users__*
-db/checks/chain_integrity.sql       Kiểm tra toàn vẹn chuỗi F0..F3 (chỉ đọc, mọi dòng phải bằng 0)
-docs/logs/                          Nhật ký thay đổi để rà soát
-src/ThreadsToxic.Web/
-  Data/                             Entity Comment (JSONB analysis_data), Post, DbContext
-  Data/ThreadChain.cs               Duyệt cây cha-con F0..F3 (con cháu, tổ tiên)
-  Endpoints/ItemEndpoints.cs        API: lọc, đếm, chuyển, hoàn tác
-  Endpoints/ExportEndpoints.cs      API: xem trước và tải file Excel/CSV
-  Endpoints/AssignEndpoints.cs      API: chia việc, chuyển việc, tổng quan
-  Services/AccessTokens.cs          Tài khoản (Auth:Users) và mã truy cập
-  Services/AuthFilters.cs           Bắt buộc xác thực cho /api, kiểm tra admin
-  Services/Export/                  Bản port exporter của crawler: lọc tiếng Việt, dựng bảng, ghi xlsx/csv
-  Hubs/CollabHub.cs                 SignalR: Join (cấp token), Focus/Blur, presence
-  Services/CollabState.cs           Trạng thái trong bộ nhớ: người online, khóa, token phiên
-  Services/CollabOptions.cs         Cấu hình mục "Collab"
-  Services/LeaseSweeper.cs          Mở khóa khi hết hạn
-  Data/ParallelQuery.cs             Truy vấn đọc trên DbContext riêng để chạy song song, thử lại khi đứt kết nối
-  wwwroot/js/util.js                esc / safeUrl / toInt / bộ đệm trang tải trước (thuần, test bằng Node)
-  wwwroot/js/auth.js                Hỏi và nhớ mã truy cập (dùng chung cho mọi trang)
-  wwwroot/                          HTML + CSS + JS thuần, SignalR client nội bộ (export.html: trang xuất file)
-tests/ThreadsToxic.Tests/           xUnit: API, SignalR, bảo mật (Postgres tạm trong Docker)
-tests/js/                           Test của util.js
-tests/ui/e2e.py                     Test giao diện bằng Playwright
 ```
 
 ## Ghi chú kỹ thuật
 
-- Mỗi lượt đi về Supabase mất vài trăm ms (khi app chạy xa Tokyo), nên dữ liệu được tải từ từ và song song thay vì một lần:
+- Mỗi lượt đi về database tốn thời gian, nên dữ liệu được tải từ từ và song song thay vì một lần:
   - Các API đọc (`/api/items`, `/api/review`, `/api/items/progress`) chạy các truy vấn độc lập song song, mỗi truy vấn một kết nối (`IDbContextFactory`, xem `Data/ParallelQuery.cs`).
   - Xuất file lấy danh sách id theo thứ tự trước, rồi tải bình luận theo lô 2 000 dòng (4 lô cùng lúc, lô đứt kết nối thì tải lại) và bài viết một lần, sau đó ghép lại đúng thứ tự. Kết quả giống hệt cách tải một lần trước đây.
   - Trang chính và Kho phụ tải trước trang kế tiếp ở nền (bấm "Sau →" hiện ngay), bỏ bản tải trước khi dữ liệu đổi. Trong lúc tải, danh sách cũ vẫn hiện và mờ đi. Dữ liệu tải song song với lúc kết nối SignalR.

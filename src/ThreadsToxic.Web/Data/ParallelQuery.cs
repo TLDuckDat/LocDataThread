@@ -21,8 +21,8 @@ public static class ParallelQuery
     }
 
     /// <summary>
-    /// Như <see cref="RunAsync{T}"/>, thử lại khi kết nối đứt giữa chừng (pooler của Supabase thỉnh thoảng
-    /// cắt kết nối khi đang truyền dữ liệu). Chỉ dùng cho truy vấn đọc: chạy lại không đổi dữ liệu.
+    /// Như <see cref="RunAsync{T}"/>, thử lại khi kết nối đứt giữa chừng (ví dụ khi Docker hoặc Postgres
+    /// khởi động lại giữa chừng). Chỉ dùng cho truy vấn đọc: chạy lại không đổi dữ liệu.
     /// Lỗi do chính câu SQL (PostgresException) không thử lại.
     /// </summary>
     public static async Task<T> RunWithRetryAsync<T>(this IDbContextFactory<AppDbContext> factory,

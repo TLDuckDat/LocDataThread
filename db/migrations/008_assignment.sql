@@ -5,7 +5,7 @@
 -- Giao việc chỉ để sắp xếp công việc: ai cũng vẫn xử lý được mọi bình luận (kiểm tra chéo).
 -- Idempotent.
 --
--- Chạy: psql -h localhost -U postgres -d <tên_database> -v ON_ERROR_STOP=1 -f db/migrations/008_assignment.sql
+-- Chạy: powershell -ExecutionPolicy Bypass -File tools/local_db.ps1 -Action migrate
 
 ALTER TABLE comments ADD COLUMN IF NOT EXISTS assigned_to VARCHAR(60);
 

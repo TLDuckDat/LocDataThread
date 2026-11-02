@@ -7,7 +7,7 @@
 -- Bài viết (review_queue.record_type = 'post') không thuộc quy tắc này.
 -- Idempotent: chạy lại nhiều lần an toàn. Chạy sau khi dữ liệu đã đúng (xem tools/check_chain.py).
 --
--- Chạy: powershell -ExecutionPolicy Bypass -File tools/supabase_psql.ps1 -v ON_ERROR_STOP=1 -f db/migrations/005_chain_integrity.sql
+-- Chạy: powershell -ExecutionPolicy Bypass -File tools/local_db.ps1 -Action migrate
 
 DO $$
 BEGIN

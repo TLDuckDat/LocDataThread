@@ -4,7 +4,7 @@ namespace ThreadsToxic.Tests.Infrastructure;
 
 /// <summary>
 /// Postgres tạm trong Docker, dùng chung cho cả lần chạy test. Dựng từ db/schema.sql rồi
-/// db/migrations theo thứ tự tên file, cùng major version với Supabase.
+/// db/migrations theo thứ tự tên file, cùng major version với docker-compose.yml.
 /// Testcontainers (Ryuk) tự xóa container khi tiến trình test kết thúc.
 /// </summary>
 internal static class TestDatabaseContainer

@@ -3,7 +3,7 @@
 -- Nguyên nhân: crawler lưu bản raw trước khi tính chuỗi F0..F3 (xem threads_crawler.py).
 -- Idempotent.
 --
--- Chạy: powershell -ExecutionPolicy Bypass -File tools/supabase_psql.ps1 -v ON_ERROR_STOP=1 -f db/migrations/006_review_incomplete.sql
+-- Chạy: powershell -ExecutionPolicy Bypass -File tools/local_db.ps1 -Action migrate
 
 CREATE TABLE IF NOT EXISTS review_incomplete (
     id                  VARCHAR(100) PRIMARY KEY,       -- id bình luận (giống review_queue.id)

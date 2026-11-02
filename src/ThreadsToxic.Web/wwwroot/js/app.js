@@ -14,17 +14,19 @@
 
   const state = {
     me: null,
-    bucket: "active",
+    bucket: "todo",   // "todo" chưa lọc | "kept" đã giữ | "excluded" đã bỏ
     page: 1,
     total: 0,
     items: [],
-    counts: { active: 0, excluded: 0 },
+    counts: { active: 0, excluded: 0, todo: 0, kept: 0 },
     selected: new Set(),
     focusId: null,
     token: null,    // token phiên do server cấp khi Join (gửi trong header X-Session-Token)
     locks: {},      // itemId -> tên người đang xem
     presence: [],
     connected: false,
+    userTouched: false, // người dùng đã đổi tab hoặc bộ lọc (chặn chế độ xem mặc định ghi đè)
+    listLoaded: false,  // đã có dữ liệu danh sách lần nào chưa (để hiện khung chờ lần đầu)
   };
 
   let hub = null;
@@ -90,7 +92,9 @@
     });
     const body = await res.json().catch(() => null);
     // Đọc dữ liệu bị từ chối: mã truy cập đã bị admin đổi hoặc gỡ -> nhập lại mã
-    if (res.status === 401 && !options.method) ThreadsAuth.signOut();
+    if (res.status === 401 && !options.method) {
+      ThreadsAuth.signOut("Mã truy cập không đúng hoặc đã bị đổi. Nhập lại mã do admin cấp.");
+    }
     if (!res.ok) {
       const error = new Error(typeof body === "string" ? body : "Yêu cầu thất bại.");
       error.status = res.status;
@@ -122,7 +126,7 @@
     const params = new URLSearchParams({ bucket: state.bucket, page: state.page, pageSize: PAGE_SIZE });
     const map = {
       keyword: "#keyword", word: "#word", minScore: "#minScore", replyLevel: "#replyLevel", source: "#source",
-      review: "#review", reviewedBy: "#reviewedBy", assigned: "#assigned", order: "#order",
+      reviewedBy: "#reviewedBy", assigned: "#assigned", order: "#order",
     };
     for (const [key, sel] of Object.entries(map)) {
       const value = $(sel).value.trim();
@@ -185,6 +189,7 @@
       state.total = list.total;
       state.items = list.items;
       state.counts = counts;
+      state.listLoaded = true;
 
       const visible = new Set(list.items.map((i) => i.id));
       for (const id of [...state.selected]) if (!visible.has(id)) state.selected.delete(id);
@@ -202,6 +207,7 @@
       prefetchNextPage();
     } catch (err) {
       if (seq !== reloadSeq) return;
+      if (!state.listLoaded) $("#list").innerHTML = `<div class="empty">Chưa tải được danh sách. Thử tải lại trang.</div>`;
       toast(`Không tải được dữ liệu: ${err.message}`);
     } finally {
       clearTimeout(loadingTimer);
@@ -219,7 +225,8 @@
 
   // ---------- Hiển thị ----------
   function renderCounts() {
-    $("#countActive").textContent = state.counts.active.toLocaleString("vi-VN");
+    $("#countTodo").textContent = (state.counts.todo ?? 0).toLocaleString("vi-VN");
+    $("#countKept").textContent = (state.counts.kept ?? 0).toLocaleString("vi-VN");
     $("#countExcluded").textContent = state.counts.excluded.toLocaleString("vi-VN");
     document.querySelectorAll(".tab").forEach((tab) =>
       tab.classList.toggle("is-active", tab.dataset.bucket === state.bucket));
@@ -236,7 +243,7 @@
     const words = (item.matchedWords || []).slice(0, 6)
       .map((w) => `<span class="tag">${esc(w)}</span>`).join("");
     const lock = lockedByOther ? `<span class="lock">🔒 ${esc(holder)} đang xem</span>` : "";
-    const badge = reviewBadge(item);
+    const badge = statusBadge(item);
 
     return `
       <article class="${classes.join(" ")}" data-id="${esc(item.id)}">
@@ -256,26 +263,47 @@
       </article>`;
   }
 
-  // Người xử lý gần nhất (duyệt, loại, khôi phục); chỉ hiện nếu đã có người xử lý
-  function reviewBadge(item) {
-    if (!item.reviewedBy) return "";
-    const when = item.reviewedAt ? ` · ${formatDate(item.reviewedAt)}` : "";
-    return `<span class="reviewed" title="Người xử lý gần nhất${esc(when)}">✓ ${esc(item.reviewedBy)}</span>`;
+  // Trạng thái của bình luận: Chưa lọc / Đã giữ (ai giữ) / Đã bỏ (ai bỏ)
+  function statusBadge(item) {
+    if (item.isExcluded) {
+      const when = item.excludedAt ? ` · ${formatDate(item.excludedAt)}` : "";
+      return `<span class="status-badge is-excluded" title="Đã bỏ${esc(when)}">🗑 Bỏ · ${esc(item.excludedBy || "—")}</span>`;
+    }
+    if (item.reviewedBy) {
+      const when = item.reviewedAt ? ` · ${formatDate(item.reviewedAt)}` : "";
+      return `<span class="status-badge is-kept" title="Đã giữ${esc(when)}">✅ Giữ · ${esc(item.reviewedBy)}</span>`;
+    }
+    return `<span class="status-badge is-todo">⏳ Chưa lọc</span>`;
   }
+
+  const EMPTY_TEXT = {
+    todo: "Không còn bình luận nào chưa lọc với bộ lọc này. 🎉",
+    kept: "Chưa có bình luận nào được giữ với bộ lọc này.",
+    excluded: "Chưa có bình luận nào bị bỏ với bộ lọc này.",
+  };
 
   function renderList() {
     const list = $("#list");
     list.innerHTML = state.items.length
       ? state.items.map(rowHtml).join("")
-      : `<div class="empty">${state.bucket === "active" ? "Không còn bình luận nào cần lọc với bộ lọc này." : "Chưa có bình luận nào trong mục Đã loại."}</div>`;
+      : `<div class="empty">${EMPTY_TEXT[state.bucket]}</div>`;
 
     const allChecked = state.items.length > 0 && state.items.every((i) => state.selected.has(i.id));
     $("#selectPage").checked = allChecked;
     $("#selCount").textContent = `Đã chọn ${state.selected.size}`;
 
     const moveBtn = $("#moveBtn");
-    moveBtn.textContent = state.bucket === "active" ? "Loại khỏi danh sách" : "Khôi phục về danh sách";
+    moveBtn.textContent = state.bucket === "excluded" ? "Khôi phục → Đã giữ (X)" : "Bỏ (X)";
     moveBtn.disabled = state.items.length === 0;
+    $("#approveBtn").hidden = state.bucket !== "todo";
+    $("#unreviewBtn").hidden = state.bucket !== "kept";
+  }
+
+  // Khung chờ hiện ngay khi mở trang, trước khi có dữ liệu đầu tiên
+  function renderSkeleton() {
+    const row = `<article class="row skeleton" aria-hidden="true"><div></div><div>` +
+      `<div class="bar w30"></div><div class="bar w92"></div><div class="bar w70"></div></div></article>`;
+    $("#list").innerHTML = row.repeat(6);
   }
 
   function renderPager() {
@@ -304,9 +332,11 @@
     const lockedByOther = holder && holder !== state.me?.name;
     const categories = (item.categories || []).join(", ") || "—";
     const words = (item.matchedWords || []).join(", ") || "—";
-    const moveLabel = item.isExcluded ? "Khôi phục" : "Loại khỏi danh sách";
-    const approveBtn = item.isExcluded ? "" :
+    const moveLabel = item.isExcluded ? "Khôi phục → Đã giữ" : "Bỏ";
+    const approveBtn = item.isExcluded || item.reviewedBy ? "" :
       `<button class="btn" type="button" data-role="approve-focus">Giữ lại ✓ (A)</button>`;
+    const unreviewBtn = !item.isExcluded && item.reviewedBy ?
+      `<button class="btn" type="button" data-role="unreview-focus">↩ Đưa về Chưa lọc (U)</button>` : "";
     // Chỉ http(s): chặn javascript:, data:... có thể nằm trong dữ liệu cào về.
     const href = safeUrl(item.commentUrl) || safeUrl(item.postUrl);
     const link = href
@@ -314,7 +344,7 @@
       : "—";
 
     panel.innerHTML = `
-      <h2>Ngữ cảnh hội thoại</h2>
+      <h2>Ngữ cảnh hội thoại ${statusBadge(item)}</h2>
       <ol class="chain">${chain}</ol>
       <dl class="kv">
         <dt>Tác giả</dt><dd>@${esc(item.authorUsername || "ẩn danh")} ${item.authorName ? `(${esc(item.authorName)})` : ""}</dd>
@@ -323,9 +353,9 @@
         <dt>Phân loại</dt><dd>${esc(categories)}</dd>
         <dt>Từ khớp</dt><dd>${esc(words)}</dd>
         <dt>Nguồn</dt><dd>${item.source ? `Lọc trùng · ${esc(sourceLabel(item.source))}` : "Dữ liệu chính"}</dd>
-        ${item.isExcluded ? `<dt>Đã loại bởi</dt><dd>${esc(item.excludedBy || "—")}</dd>` : ""}
-        ${item.isExcluded && item.threadParentId ? `<dt>Khôi phục</dt><dd>Cần bình luận cha đang ở "Đang lọc"; nếu không, dùng "Khôi phục cả chuỗi"</dd>` : ""}
-        ${!item.isExcluded && item.replyLevel < 3 ? `<dt>Lưu ý</dt><dd>Loại bình luận này sẽ loại kèm mọi trả lời bên dưới</dd>` : ""}
+        ${item.isExcluded ? `<dt>Đã bỏ bởi</dt><dd>${esc(item.excludedBy || "—")} · ${esc(formatDate(item.excludedAt))}</dd>` : ""}
+        ${item.isExcluded && item.threadParentId ? `<dt>Khôi phục</dt><dd>Cần bình luận cha chưa bị bỏ; nếu không, dùng "Khôi phục cả chuỗi"</dd>` : ""}
+        ${!item.isExcluded && item.replyLevel < 3 ? `<dt>Lưu ý</dt><dd>Bỏ bình luận này sẽ bỏ kèm mọi trả lời bên dưới</dd>` : ""}
         <dt>Xử lý gần nhất</dt><dd>${item.reviewedBy ? `${esc(item.reviewedBy)} · ${esc(formatDate(item.reviewedAt))}` : "Chưa ai xử lý"}</dd>
         <dt>Liên kết</dt><dd>${link}</dd>
       </dl>
@@ -333,6 +363,7 @@
       <div class="actions">
         <button class="btn primary" type="button" data-role="move-focus" ${lockedByOther ? "disabled" : ""}>${moveLabel} (X)</button>
         ${approveBtn}
+        ${unreviewBtn}
       </div>`;
   }
 
@@ -409,9 +440,9 @@
       const movedIds = result.movedIds || [];
       const handled = ids.filter((id) => !locked.includes(id) && !blocked.includes(id));
 
-      const verb = toExcluded ? "Đã loại" : "Đã khôi phục";
+      const verb = toExcluded ? "Đã bỏ" : "Đã khôi phục (sang Đã giữ)";
       let message = `${verb} ${result.moved} bình luận.`;
-      if (result.cascaded?.length) message += ` Kèm ${result.cascaded.length} trả lời bên dưới (loại theo cha).`;
+      if (result.cascaded?.length) message += ` Kèm ${result.cascaded.length} trả lời bên dưới (bỏ theo cha).`;
       if (result.restoredAncestors?.length) message += ` Kèm ${result.restoredAncestors.length} bình luận cha để chuỗi liền mạch.`;
       if (result.skipped) message += ` ${result.skipped} bình luận đã ở đúng mục.`;
 
@@ -429,7 +460,7 @@
         }
       }
       if (blocked.length) {
-        message += ` ${blocked.length} bình luận chưa khôi phục được vì bình luận cha vẫn ở "Đã loại".`;
+        message += ` ${blocked.length} bình luận chưa khôi phục được vì bình luận cha vẫn ở "Đã bỏ".`;
         actions.push({ label: "Khôi phục cả chuỗi", onClick: () => moveItems(blocked, false, { withAncestors: true }) });
       }
       toast(message, { actions, ms: actions.length ? UNDO_WINDOW_MS : undefined });
@@ -461,7 +492,6 @@
     scheduleReload();
   }
 
-  // Giữ lại: đánh dấu đã duyệt, bình luận vẫn ở "Đang lọc" (không khóa, không thể hoàn tác bằng nút này)
   // Bình luận kế tiếp để xem sau khi xử lý xong bình luận đang xem (bỏ qua những dòng vừa đổi)
   function nextFocusAfter(done) {
     const idx = state.items.findIndex((i) => i.id === state.focusId);
@@ -470,18 +500,46 @@
     return (after || before)?.id ?? null;
   }
 
+  // Giữ lại: chuyển sang "Đã giữ" (vẫn dùng trong dữ liệu). Lỡ tay thì Hoàn tác hoặc "Đưa về Chưa lọc".
   async function approveItems(ids) {
     if (!ids.length) return;
     try {
       const result = await postWithSession("/api/items/approve", { ids });
       if (ids.includes(state.focusId)) setFocus(nextFocusAfter(new Set(ids)));
-      toast(`Đã giữ lại ${result.approved} bình luận.${result.skipped ? ` ${result.skipped} bình luận đã được loại nên bỏ qua.` : ""}`);
+      const approvedIds = result.approvedIds || [];
+      toast(`Đã giữ ${result.approved} bình luận.${result.skipped ? ` ${result.skipped} bình luận đã bị bỏ nên bỏ qua.` : ""}`, {
+        actions: approvedIds.length ? [{ label: "Hoàn tác", onClick: () => unreviewItems(approvedIds) }] : [],
+        ms: approvedIds.length ? UNDO_WINDOW_MS : undefined,
+      });
       for (const id of ids) state.selected.delete(id);
     } catch (err) {
       toast(`Không giữ lại được: ${err.message}`);
     }
     refreshProgress();
     scheduleReload();
+  }
+
+  // Đưa về "Chưa lọc": bỏ dấu đã giữ (thành viên chỉ đưa về được bình luận do mình giữ)
+  async function unreviewItems(ids) {
+    if (!ids.length) return;
+    try {
+      const result = await postWithSession("/api/items/unreview", { ids });
+      if (state.bucket === "kept" && ids.includes(state.focusId)) setFocus(nextFocusAfter(new Set(ids)));
+      toast(`Đã đưa ${result.reset} bình luận về Chưa lọc.` +
+        (result.skipped ? ` ${result.skipped} bình luận do người khác giữ hoặc đã bị bỏ nên giữ nguyên.` : ""));
+      for (const id of ids) state.selected.delete(id);
+    } catch (err) {
+      toast(`Không đưa về được: ${err.message}`);
+    }
+    refreshProgress();
+    scheduleReload();
+  }
+
+  function unreviewSelectionOrFocus() {
+    const ids = state.selected.size
+      ? [...state.selected]
+      : (state.focusId ? [state.focusId] : []);
+    unreviewItems(ids);
   }
 
   function approveSelectionOrFocus() {
@@ -492,7 +550,7 @@
   }
 
   function moveSelectionOrFocus() {
-    const toExcluded = state.bucket === "active";
+    const toExcluded = state.bucket !== "excluded";
     const ids = state.selected.size
       ? [...state.selected]
       : (state.focusId ? [state.focusId] : []);
@@ -509,7 +567,7 @@
     hub.on("ItemsMoved", ({ ids, toExcluded, by, counts }) => {
       for (const id of ids) delete state.locks[id];
       if (by !== state.me?.name) {
-        toast(`${by} đã ${toExcluded ? "loại" : "khôi phục"} ${ids.length} bình luận.`);
+        toast(`${by} đã ${toExcluded ? "bỏ" : "khôi phục"} ${ids.length} bình luận.`);
       }
       // Cập nhật huy hiệu ngay; thiếu trường (server cũ) thì chỉ dựa vào lần tải lại.
       if (counts) {
@@ -520,8 +578,10 @@
       scheduleReload();
     });
 
-    hub.on("ItemsReviewed", ({ by, ids }) => {
-      if (by !== state.me?.name) toast(`${by} đã giữ lại ${ids.length} bình luận.`);
+    hub.on("ItemsReviewed", ({ by, ids, unreview }) => {
+      if (by !== state.me?.name) {
+        toast(unreview ? `${by} đã đưa ${ids.length} bình luận về Chưa lọc.` : `${by} đã giữ ${ids.length} bình luận.`);
+      }
       refreshProgress();
       scheduleReload();
     });
@@ -636,17 +696,14 @@
     }
   }
 
-  // Lần đầu vào: đã được giao việc thì mở "Phần của tôi · chưa xử lý", chưa thì xem tất cả
+  // Lần đầu vào (tab Chưa lọc): đã được giao việc thì mở "Phần của tôi", chưa thì xem tất cả
   async function chooseDefaultView() {
     try {
       const a = await api("/api/items/assignments");
-      const mine = a.people.find((x) => x.name === state.me?.name);
-      if (mine?.assigned) {
-        $("#assigned").value = "me";
-        $("#review").value = "unreviewed";
-      } else {
-        $("#assigned").value = "";
-      }
+      // Người dùng đã tự chọn bộ lọc hoặc tab trong lúc chờ: giữ lựa chọn của họ, không ghi đè
+      if (state.userTouched) return;
+      const mine = a.people.find((x) => x.name === a.me);
+      $("#assigned").value = mine?.assigned ? "me" : "";
     } catch {
       $("#assigned").value = "";
     }
@@ -661,7 +718,8 @@
   async function refreshProgress() {
     try {
       const [p, a] = await Promise.all([api("/api/items/progress"), api("/api/items/assignments")]);
-      const mine = a.people.find((x) => x.name === state.me?.name);
+      // a.me: tên theo mã truy cập, có ngay cả khi chưa Join xong SignalR
+      const mine = a.people.find((x) => x.name === (a.me ?? state.me?.name));
       $("#myProgress").textContent = mine && mine.assigned
         ? `Phần của tôi: còn ${mine.remaining.toLocaleString("vi-VN")}/${mine.assigned.toLocaleString("vi-VN")}`
         : "";
@@ -684,20 +742,23 @@
   // ---------- Khởi tạo ----------
   function bindUi() {
     document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
+      state.userTouched = true;
       state.bucket = tab.dataset.bucket;
       state.page = 1;
       state.selected.clear();
       setFocus(null);
+      // Bình luận đã bỏ (kể cả bỏ theo cha) thường của người khác hoặc chưa giao cho ai,
+      // nên khi mở tab này thì bỏ bộ lọc "Phần của tôi" để thấy toàn bộ dữ liệu đã bỏ.
+      if (state.bucket === "excluded") $("#assigned").value = "";
       reload();
     }));
 
-    const onFilterChange = () => { state.page = 1; reload(); };
+    const onFilterChange = () => { state.userTouched = true; state.page = 1; reload(); };
     $("#keyword").addEventListener("input", debounce(onFilterChange, 300));
     $("#word").addEventListener("input", debounce(onFilterChange, 300));
     $("#minScore").addEventListener("change", onFilterChange);
     $("#replyLevel").addEventListener("change", onFilterChange);
     $("#source").addEventListener("change", onFilterChange);
-    $("#review").addEventListener("change", onFilterChange);
     $("#reviewedBy").addEventListener("input", debounce(onFilterChange, 300));
     $("#assigned").addEventListener("change", onFilterChange);
     $("#order").addEventListener("change", onFilterChange);
@@ -706,6 +767,7 @@
     $("#splitBtn").addEventListener("click", splitWork);
     $("#transferBtn").addEventListener("click", transferWork);
     $("#approveBtn").addEventListener("click", approveSelectionOrFocus);
+    $("#unreviewBtn").addEventListener("click", unreviewSelectionOrFocus);
     $("#filters").addEventListener("submit", (e) => e.preventDefault());
 
     $("#prev").addEventListener("click", () => { state.page--; reload(); });
@@ -740,6 +802,9 @@
       if (e.target.matches('[data-role="approve-focus"]') && state.focusId) {
         approveItems([state.focusId]);
       }
+      if (e.target.matches('[data-role="unreview-focus"]') && state.focusId) {
+        unreviewItems([state.focusId]);
+      }
     });
 
     document.addEventListener("keydown", (e) => {
@@ -755,7 +820,10 @@
           if (state.focusId || state.selected.size) moveSelectionOrFocus();
           break;
         case "a":
-          if (state.bucket === "active" && (state.focusId || state.selected.size)) approveSelectionOrFocus();
+          if (state.bucket === "todo" && (state.focusId || state.selected.size)) approveSelectionOrFocus();
+          break;
+        case "u":
+          if (state.bucket === "kept" && (state.focusId || state.selected.size)) unreviewSelectionOrFocus();
           break;
       }
     });
@@ -766,18 +834,22 @@
     $("#signOut").addEventListener("click", () => ThreadsAuth.signOut());
     await ThreadsAuth.ensure();
 
+    // Danh sách và tiến độ chỉ cần mã truy cập (header), không chờ SignalR: tải song song với lúc kết nối
+    renderSkeleton();
+    const listReady = chooseDefaultView().then(reload);
+    refreshProgress();
+    refreshQueueCount();
+
     connectHub();
     try {
       await hub.start();
       await joinRoom();
+      scheduleReload();   // thay đổi xảy ra trong lúc đang kết nối chưa có sự kiện
     } catch (err) {
       setStatus("Không kết nối được máy chủ", "offline");
       toast(`Lỗi kết nối: ${err.message}`);
     }
-    await chooseDefaultView();
-    reload();
-    refreshProgress();
-    refreshQueueCount();
+    await listReady;
   }
 
   start();

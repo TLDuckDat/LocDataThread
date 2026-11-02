@@ -257,6 +257,15 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
 
 .empty { padding: 40px 12px; text-align: center; color: var(--muted); }
 
+/* Khung chờ lần đầu: hình dạng giống một dòng bình luận, nhấp nháy nhẹ */
+.row.skeleton { pointer-events: none; }
+.row.skeleton .bar { height: 12px; border-radius: 6px; background: var(--surface-2); margin-bottom: 8px; animation: pulse 1.4s ease-in-out infinite; }
+.row.skeleton .bar.w30 { width: 30%; }
+.row.skeleton .bar.w70 { width: 70%; }
+.row.skeleton .bar.w92 { width: 92%; }
+@keyframes pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .row.skeleton .bar { animation: none; } }
+
 /* ---- Pager ---- */
 .pager { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
 
@@ -356,13 +365,22 @@ a.btn[hidden] { display: none; }
 .summary-line { margin: 0 0 10px; }
 
 .progress { font-size: 13px; }
-.reviewed {
+/* Trạng thái bình luận: chưa lọc / đã giữ / đã bỏ */
+.status-badge {
+  --badge: var(--muted);
   font-size: 12px;
+  font-weight: 500;
   padding: 0 6px;
   border-radius: 5px;
-  color: var(--ok);
-  border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+  color: var(--badge);
+  border: 1px solid color-mix(in srgb, var(--badge) 40%, transparent);
+  background: color-mix(in srgb, var(--badge) 8%, transparent);
+  white-space: nowrap;
 }
+.status-badge.is-todo { --badge: var(--warn); }
+.status-badge.is-kept { --badge: var(--ok); }
+.status-badge.is-excluded { --badge: var(--danger); }
+.detail h2 .status-badge { vertical-align: middle; margin-left: 6px; }
 
 /* ---- Trang xuất Excel/CSV ---- */
 .topnav { margin-left: auto; }
